@@ -62,6 +62,7 @@ export interface Recommendation {
   explanation: string;
   oneLiner?: string;
   artIndex: number;
+  explainabilityPresent: boolean;
 }
 
 export interface DiscoverInput {

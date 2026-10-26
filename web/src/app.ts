@@ -1,3 +1,12 @@
+import {
+  HEALTH_POLL_INTERVAL_MS,
+  HEALTH_POLL_TIMEOUT_MS,
+  REQUEST_TIMEOUT_MS,
+  WAKE_NOTICE_DELAY_MS,
+  requestUiState,
+  type RequestUiState,
+} from "./request-policy.js";
+
 type TargetType = "artist" | "book" | "podcast" | "movie" | "tv_show" | "video_game" | "place";
 type Distance = 0 | 1 | 2;
 type Recommendation = { id: string; title: string; type: TargetType; becauseOf: string[]; distance: Distance; explanation: string; oneLiner?: string; artIndex: number };
@@ -31,11 +40,51 @@ const grid = $("card-grid");
 const results = $("results");
 const empty = $("empty-state");
 const toast = $("toast");
+const requestStatus = $("request-status");
+const requestStatusCopy = $("request-status-copy");
+const requestRetry = $<HTMLButtonElement>("request-retry");
+const demoPill = $<HTMLButtonElement>("demo-pill");
+let activeRequestId = 0;
+
+class RequestTimeoutError extends Error {
+  constructor() {
+    super("The request timed out while the server was waking up.");
+    this.name = "RequestTimeoutError";
+  }
+}
 
 function showToast(message: string) {
   toast.textContent = message;
   toast.classList.add("visible");
   window.setTimeout(() => toast.classList.remove("visible"), 2600);
+}
+
+function hideRequestStatus() {
+  requestStatus.hidden = true;
+  requestStatus.classList.remove("timed-out", "awake");
+  requestRetry.hidden = true;
+  requestRetry.onclick = null;
+}
+
+function showRequestStatus(state: RequestUiState, retry?: () => void) {
+  requestStatus.hidden = false;
+  requestStatus.classList.toggle("timed-out", state.phase === "timed-out");
+  requestStatus.classList.remove("awake");
+  requestStatusCopy.textContent = state.message;
+  requestRetry.hidden = !state.canRetry;
+  requestRetry.onclick = state.canRetry && retry
+    ? () => {
+        hideRequestStatus();
+        retry();
+      }
+    : null;
+}
+
+function showServerAwake(requestId: number) {
+  if (requestId !== activeRequestId || requestStatus.classList.contains("timed-out")) return;
+  requestStatus.hidden = false;
+  requestStatus.classList.add("awake");
+  requestStatusCopy.textContent = "Server is awake — finishing your request…";
 }
 
 function renderInterests() {
@@ -77,6 +126,7 @@ function showEmpty() {
   results.hidden = true;
   $("trace-panel").hidden = true;
   empty.hidden = false;
+  demoPill.hidden = true;
 }
 
 function setLoading(loading: boolean) {
@@ -103,11 +153,69 @@ function currentInput() {
   };
 }
 
-async function api<T>(path: string, body: object): Promise<T> {
-  const response = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-  const payload = await response.json() as T & { error?: string };
-  if (!response.ok) throw new Error(payload.error ?? "The discovery path closed unexpectedly.");
-  return payload;
+async function api<T>(path: string, body: object, retry: () => void): Promise<T> {
+  const requestId = ++activeRequestId;
+  const controller = new AbortController();
+  let healthController: AbortController | undefined;
+  let healthPollTimer: number | undefined;
+  let pollingStopped = false;
+  let timedOut = false;
+  hideRequestStatus();
+
+  const pollHealth = async () => {
+    if (pollingStopped || requestId !== activeRequestId) return;
+    healthController = new AbortController();
+    const healthTimeout = window.setTimeout(() => healthController?.abort(), HEALTH_POLL_TIMEOUT_MS);
+    try {
+      const response = await fetch("/api/health", { cache: "no-store", signal: healthController.signal });
+      const health = response.ok ? await response.json() as { ok?: boolean } : undefined;
+      if (health?.ok) showServerAwake(requestId);
+    } catch {
+      // The server may still be asleep. The next bounded poll will try again.
+    } finally {
+      window.clearTimeout(healthTimeout);
+      if (!pollingStopped && requestId === activeRequestId) {
+        healthPollTimer = window.setTimeout(() => void pollHealth(), HEALTH_POLL_INTERVAL_MS);
+      }
+    }
+  };
+
+  const wakeTimer = window.setTimeout(() => {
+    if (requestId !== activeRequestId) return;
+    showRequestStatus(requestUiState(WAKE_NOTICE_DELAY_MS));
+    void pollHealth();
+  }, WAKE_NOTICE_DELAY_MS);
+
+  const timeoutTimer = window.setTimeout(() => {
+    if (requestId !== activeRequestId) return;
+    timedOut = true;
+    pollingStopped = true;
+    healthController?.abort();
+    controller.abort();
+    showRequestStatus(requestUiState(REQUEST_TIMEOUT_MS), retry);
+  }, REQUEST_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+    const payload = await response.json() as T & { error?: string };
+    if (!response.ok) throw new Error(payload.error ?? "The discovery path closed unexpectedly.");
+    return payload;
+  } catch (error) {
+    if (timedOut) throw new RequestTimeoutError();
+    throw error;
+  } finally {
+    pollingStopped = true;
+    healthController?.abort();
+    window.clearTimeout(wakeTimer);
+    window.clearTimeout(timeoutTimer);
+    if (healthPollTimer !== undefined) window.clearTimeout(healthPollTimer);
+    if (!timedOut && requestId === activeRequestId) hideRequestStatus();
+  }
 }
 
 function typeLabel(type: TargetType) {
@@ -164,7 +272,7 @@ function renderCard(item: Recommendation) {
   return article;
 }
 
-function renderResults(response: DiscoveryResponse) {
+function renderResults(response: DiscoveryResponse, isDemoRun = false) {
   recommendations = response.recommendations;
   latestTrace = response.trace;
   grid.replaceChildren(...recommendations.map(renderCard));
@@ -173,6 +281,7 @@ function renderResults(response: DiscoveryResponse) {
   $("trace-panel").hidden = false;
   $("result-summary").textContent = `${recommendations.length} new paths, connected to what you already love.`;
   $("mode-note").textContent = response.mode === "mock" ? "Preview constellation" : "Live Qloo signal";
+  demoPill.hidden = !isDemoRun;
   renderTrace(response.trace, recommendations.length);
 }
 
@@ -195,7 +304,7 @@ function renderTrace(trace: TraceStep[], countFound: number) {
   $("trace-status").textContent = `${countFound} new paths found`;
 }
 
-async function discover() {
+async function discover(isDemoRun = false) {
   if (interests.length < 3 || interests.length > 5) {
     showToast("Choose 3 to 5 things you love first.");
     interestInput.focus();
@@ -211,10 +320,15 @@ async function discover() {
   setLoading(true);
   try {
     excludedIds = [];
-    renderResults(await api<DiscoveryResponse>("/api/discover", currentInput()));
+    const response = await api<DiscoveryResponse>("/api/discover", currentInput(), () => void discover(isDemoRun));
+    renderResults(response, isDemoRun);
   } catch (error) {
-    showToast(error instanceof Error ? error.message : "Discovery failed.");
-    if (recommendations.length) grid.replaceChildren(...recommendations.map(renderCard)); else showEmpty();
+    if (error instanceof RequestTimeoutError) {
+      if (recommendations.length) grid.replaceChildren(...recommendations.map(renderCard));
+    } else {
+      showToast(error instanceof Error ? error.message : "Discovery failed.");
+      if (recommendations.length) grid.replaceChildren(...recommendations.map(renderCard)); else showEmpty();
+    }
   } finally {
     setLoading(false);
   }
@@ -229,7 +343,7 @@ async function exclude(item: Recommendation, article: HTMLElement, button: HTMLB
       ...currentInput(),
       knownId: item.id,
       currentIds: recommendations.map((entry) => entry.id),
-    });
+    }, () => void exclude(item, article, button));
     excludedIds.push(item.id);
     const index = recommendations.findIndex((entry) => entry.id === item.id);
     if (response.recommendations[0]) {
@@ -246,7 +360,9 @@ async function exclude(item: Recommendation, article: HTMLElement, button: HTMLB
     article.classList.remove("departing");
     button.disabled = false;
     button.textContent = "I already know this";
-    showToast(error instanceof Error ? error.message : "Could not refill that card.");
+    if (!(error instanceof RequestTimeoutError)) {
+      showToast(error instanceof Error ? error.message : "Could not refill that card.");
+    }
   }
 }
 
@@ -284,6 +400,10 @@ distance.addEventListener("input", () => {
   distance.style.setProperty("--distance-progress", `${value * 50}%`);
 });
 discoverButton.addEventListener("click", () => void discover());
+demoPill.addEventListener("click", () => {
+  $("composer-title").scrollIntoView({ behavior: "smooth", block: "center" });
+  window.setTimeout(() => interestInput.focus(), 350);
+});
 $("clear-button").addEventListener("click", () => {
   interests = [];
   recommendations = [];
@@ -297,4 +417,4 @@ renderExamples();
 renderInterests();
 updateTarget();
 distance.dispatchEvent(new Event("input"));
-void discover();
+void discover(true);

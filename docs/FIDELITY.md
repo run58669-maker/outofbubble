@@ -13,12 +13,14 @@ Verified render: 1440 × 1000 desktop and 390 × 844 mobile, captured from `http
 | Agent trace | Integrated bottom panel with Resolve → Discover → Explain | Collapsible semantic `details` panel mirrors the structure and adds a fourth Refill step only after exclusion | Intentional state-specific extension |
 | Responsive behavior | Desktop two-column system with implied phone continuation | 390 px capture shows a strict one-column stack, 390 px body width, no horizontal overflow, and full-width primary actions | No material mismatch |
 | Motion and states | Clear interactive affordances and restrained motion cues | Hover/focus, skeleton loading, departure/refill, toast, and reduced-motion handling are present | No material mismatch |
+| Render cold start | Not shown in the original static concept | A compact warm-bordered status row appears after 3 seconds, retains the existing palette, and becomes an inline retry action at 25 seconds | Required production state; no layout regression |
+| Default demo disclosure | The concept uses fictional seeded results | A small `Demo run — try your own` control now labels the automatic result set and returns focus to the composer | Required clarity improvement |
 
 ## Above-the-fold copy diff
 
 All concept-locked product copy is preserved: brand, tagline, composer title, the three sample interests, target label/value, distance label/stops, primary action, result heading, type, distance, cause labels, and known-item action.
 
-Intentional production additions are `Start over`, the `3 of 5` counter, input help text, the result count sentence, and the preview/live status. They support the required empty-state path, 3–5 input constraint, and transparent mock/live state without changing the product story. No hero eyebrow, badge, marketing claim, or unrelated section was added.
+Intentional production additions are `Start over`, the `3 of 5` counter, input help text, the result count sentence, preview/live status, the explicit demo control, and request-state feedback. They support the required empty-state path, 3–5 input constraint, cold-start recovery, and transparent mock/live state without changing the product story. No hero eyebrow, marketing claim, or unrelated section was added.
 
 ## Interaction verification
 

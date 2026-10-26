@@ -63,6 +63,12 @@
         </div>
       </section>
 
+      <div class="request-status" id="request-status" role="status" aria-live="polite" hidden>
+        <span class="request-status-mark" aria-hidden="true"><i></i></span>
+        <span id="request-status-copy"></span>
+        <button id="request-retry" type="button" hidden>Try again</button>
+      </div>
+
       <section class="empty-state" id="empty-state" hidden>
         <div>
           <h2>Three things are enough to leave the loop.</h2>
@@ -72,6 +78,10 @@
       </section>
 
       <section class="results" id="results" aria-labelledby="results-title">
+        <button class="demo-pill" id="demo-pill" type="button" hidden>
+          Demo run — try your own
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14m-5-5 5 5 5-5" /></svg>
+        </button>
         <div class="results-header">
           <div>
             <h2 id="results-title">Beyond your usual orbit</h2>

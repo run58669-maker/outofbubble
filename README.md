@@ -16,10 +16,26 @@ npm start
 
 Open <http://localhost:3000>. The first fictional constellation loads automatically. Click **Start over** to see the three empty-state examples.
 
-To use the live Qloo Hackathon API in PowerShell:
+The deployed app is live at <https://outofbubble.onrender.com>. It runs on Render Free, so the first request after an idle period can take 50 seconds or more while the service wakes up. The page shows a wake-up notice, checks server health, and offers a retry if a request reaches the 25-second client timeout.
+
+## Switching to the real Qloo API
+
+Set this exact server-side environment variable:
+
+```text
+QLOO_API_KEY=your_qloo_api_key
+```
+
+PowerShell:
 
 ```powershell
 $env:QLOO_API_KEY="your_qloo_api_key"; npm start
+```
+
+macOS/Linux:
+
+```bash
+QLOO_API_KEY="your_qloo_api_key" npm start
 ```
 
 The key stays in the server process. The browser never receives it.
@@ -31,6 +47,14 @@ $env:QLOO_API_KEY="your_qloo_api_key"; $env:OPENAI_API_KEY="your_openai_api_key"
 ```
 
 Without `OPENAI_API_KEY`, cards show only Qloo’s explanation. Discovery still works.
+
+To exercise five fixed cross-category sets against the real API:
+
+```powershell
+$env:QLOO_API_KEY="your_qloo_api_key"; npm run smoke:real
+```
+
+The smoke script prints only a compact summary table and never writes Qloo output to disk.
 
 ## How it works
 
@@ -71,6 +95,13 @@ Remove Qloo and the product loses its core capability. The app does not use Qloo
 
 The optional LLM writes only a short hook. It never selects, ranks, or explains the recommendation graph.
 
+## Data & privacy
+
+- The Qloo API key lives server-side only and is never exposed to the browser.
+- No Qloo responses are stored in this repository.
+- Only entity names, IDs, and tags are sent to Qloo—never personal data.
+- Mock fixtures are hand-written fiction, not captured Qloo responses.
+
 ## Configuration
 
 Copy `.env.example` into your deployment environment or set variables directly. The app does not load `.env` files itself, which avoids adding another runtime dependency; Render supplies configured values directly.
@@ -84,12 +115,12 @@ Copy `.env.example` into your deployment environment or set variables directly. 
 
 ## Test coverage
 
-Vitest covers distance mapping, validation, deduplication, mock resolution, exclusion, refill, explanation-source rendering, card count, target typing, and trace stages. Tests never call Qloo or OpenAI.
+Vitest covers distance mapping, validation, deduplication, mock resolution, exclusion, refill, explanation-source rendering, card count, target typing, trace stages, and slow-request UI thresholds. Tests never call Qloo or OpenAI.
 
 ## Deploy to Render
 
 1. Create a new Blueprint from this repository.
-2. Render reads `render.yaml` and builds the included Dockerfile.
+2. Render reads `render.yaml`, creates the `outofbubble` service, and builds the included Dockerfile.
 3. Add `QLOO_API_KEY` as a secret environment variable.
 4. Optionally add `OPENAI_API_KEY`.
 

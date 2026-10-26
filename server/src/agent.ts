@@ -91,6 +91,7 @@ export class DiscoveryAgent {
         explanation: explanation.text,
         oneLiner: oneLiners.get(insight.id),
         artIndex: index % 10,
+        explainabilityPresent: insight.affinitySourceIds.length > 0 || insight.affinitySourceNames.length > 0,
       };
     });
     trace.push({

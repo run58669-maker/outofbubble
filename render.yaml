@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: out-of-the-bubble
+    name: outofbubble
     runtime: docker
     plan: free
     healthCheckPath: /api/health

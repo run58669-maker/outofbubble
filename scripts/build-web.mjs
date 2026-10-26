@@ -5,11 +5,18 @@ import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const fromRoot = (...parts) => resolve(root, ...parts);
+const appSource = await readFile(fromRoot("web/src/app.ts"), "utf8");
+const requestPolicySource = await readFile(fromRoot("web/src/request-policy.ts"), "utf8");
+const browserSource = [
+  requestPolicySource.replace(/^export /gm, ""),
+  appSource.replace(/^import \{[\s\S]*?\} from "\.\/request-policy\.js";\r?\n\r?\n/, ""),
+].join("\n");
 
 await mkdir(fromRoot("dist/web/assets"), { recursive: true });
 await build({
   stdin: {
-    contents: await readFile(fromRoot("web/src/app.ts"), "utf8"),
+    // A single stdin unit avoids esbuild walking restricted Windows parent directories.
+    contents: browserSource,
     loader: "ts",
     sourcefile: "app.ts",
   },

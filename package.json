@@ -10,6 +10,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json && node scripts/build-web.mjs",
     "start": "npm run build && node dist/server/index.js",
+    "smoke:real": "npm run build && node scripts/smoke-real.mjs",
     "test": "vitest run",
     "test:watch": "vitest"
   },

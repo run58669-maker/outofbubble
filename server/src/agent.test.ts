@@ -90,6 +90,7 @@ describe("agent loop", () => {
     const result = await new DiscoveryAgent(new MockQlooClient(), noOneLiners).discover(baseInput);
     expect(result.recommendations).toHaveLength(8);
     expect(result.recommendations.every((item) => item.becauseOf.length > 0)).toBe(true);
+    expect(result.recommendations.every((item) => item.explainabilityPresent)).toBe(true);
     expect(result.trace.map((item) => item.stage)).toEqual(["resolve", "discover", "explain"]);
     expect(result.mode).toBe("mock");
   });
