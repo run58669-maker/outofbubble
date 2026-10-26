@@ -1,0 +1,103 @@
+import type { InsightQuery, QlooClient, QlooInsight, ResolvedEntity } from "./types.js";
+
+const QLOO_BASE_URL = "https://hackathon.api.qloo.com";
+
+type JsonObject = Record<string, unknown>;
+
+function isObject(value: unknown): value is JsonObject {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function stringValue(...values: unknown[]): string | undefined {
+  return values.find((value): value is string => typeof value === "string" && value.length > 0);
+}
+
+function arrayAt(payload: unknown, paths: string[][]): unknown[] {
+  for (const path of paths) {
+    let current: unknown = payload;
+    for (const key of path) current = isObject(current) ? current[key] : undefined;
+    if (Array.isArray(current)) return current;
+  }
+  return [];
+}
+
+function extractTags(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => (typeof item === "string" ? item : isObject(item) ? stringValue(item.name, item.value) : undefined))
+    .filter((item): item is string => Boolean(item));
+}
+
+export class HttpQlooClient implements QlooClient {
+  readonly mode = "http" as const;
+
+  constructor(private readonly apiKey: string) {
+    if (!apiKey) throw new Error("QLOO_API_KEY is required for HttpQlooClient");
+  }
+
+  private async get(path: string, params: URLSearchParams): Promise<unknown> {
+    const response = await fetch(`${QLOO_BASE_URL}${path}?${params.toString()}`, {
+      headers: { "X-Api-Key": this.apiKey, Accept: "application/json" },
+    });
+    if (!response.ok) {
+      const body = await response.text();
+      throw new Error(`Qloo ${path} failed (${response.status}): ${body.slice(0, 240)}`);
+    }
+    return response.json();
+  }
+
+  async search(query: string): Promise<ResolvedEntity[]> {
+    const payload = await this.get("/search", new URLSearchParams({ query }));
+    const rows = arrayAt(payload, [["results"], ["data"], ["results", "entities"]]);
+    return rows.flatMap((row): ResolvedEntity[] => {
+      if (!isObject(row)) return [];
+      const properties = isObject(row.properties) ? row.properties : {};
+      const id = stringValue(row.entity_id, row.id, properties.entity_id, properties.id);
+      const name = stringValue(row.name, properties.name, row.title, properties.title);
+      if (!id || !name) return [];
+      return [{
+        id,
+        name,
+        type: stringValue(row.type, properties.type) ?? "entity",
+        tags: extractTags(row.tags ?? properties.tags),
+      }];
+    });
+  }
+
+  async insights(query: InsightQuery): Promise<QlooInsight[]> {
+    const params = new URLSearchParams({
+      "filter.type": `urn:entity:${query.targetType}`,
+      "signal.interests.entities": query.signalEntityIds.join(","),
+      "bias.trends": query.biasTrends,
+      "diversify.by": query.diversifyBy,
+      "feature.explainability": "true",
+      limit: String(query.limit),
+    });
+    if (query.excludeEntityIds.length) params.set("filter.exclude.entities", query.excludeEntityIds.join(","));
+    if (query.city) params.set("filter.location.query", query.city);
+    if (query.popularityMin !== undefined) params.set("filter.popularity.min", String(query.popularityMin));
+    if (query.popularityMax !== undefined) params.set("filter.popularity.max", String(query.popularityMax));
+
+    const payload = await this.get("/v2/insights", params);
+    const rows = arrayAt(payload, [["results", "entities"], ["results"], ["data", "entities"], ["data"]]);
+    return rows.flatMap((row): QlooInsight[] => {
+      if (!isObject(row)) return [];
+      const properties = isObject(row.properties) ? row.properties : {};
+      const explainability = isObject(row.explainability) ? row.explainability : {};
+      const id = stringValue(row.entity_id, row.id, properties.entity_id, properties.id);
+      const name = stringValue(row.name, properties.name, row.title, properties.title);
+      if (!id || !name) return [];
+      const sourceRows = arrayAt(explainability, [["entities"], ["signals"], ["sources"]]);
+      const sources = sourceRows.filter(isObject);
+      return [{
+        id,
+        name,
+        type: stringValue(row.type, properties.type) ?? query.targetType,
+        description: stringValue(row.description, properties.description, row.summary, properties.short_description) ?? "A cross-category connection surfaced by Qloo.",
+        affinitySourceIds: sources.map((source) => stringValue(source.entity_id, source.id)).filter((item): item is string => Boolean(item)),
+        affinitySourceNames: sources.map((source) => stringValue(source.name, source.title)).filter((item): item is string => Boolean(item)),
+        score: typeof row.score === "number" ? row.score : undefined,
+      }];
+    });
+  }
+}

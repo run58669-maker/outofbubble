@@ -1,0 +1,26 @@
+{
+  "name": "out-of-the-bubble",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "A Qloo-powered cross-category discovery agent.",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node scripts/build-web.mjs",
+    "start": "npm run build && node dist/server/index.js",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "express": "^4.21.2"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.10.5",
+    "esbuild": "^0.28.2",
+    "typescript": "^5.7.2",
+    "vitest": "^4.1.12"
+  }
+}

@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#110d15" />
+    <meta name="description" content="Cross-category cultural discovery powered by Qloo." />
+    <title>Out of the Bubble</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <div class="sky" aria-hidden="true"><span></span><span></span><span></span></div>
+    <main class="shell">
+      <header class="masthead">
+        <a class="brand" href="/" aria-label="Out of the Bubble home">
+          <span class="brand-orbit" aria-hidden="true"><i></i></span>
+          <span>Out of the Bubble</span>
+        </a>
+        <p>Find what your algorithm would never show you.</p>
+        <button class="clear-button" id="clear-button" type="button">Start over</button>
+      </header>
+
+      <section class="composer" aria-labelledby="composer-title">
+        <div class="composer-interests">
+          <div class="section-title-row">
+            <h1 id="composer-title">Start with what you love</h1>
+            <span class="count" id="interest-count">3 of 5</span>
+          </div>
+          <div class="interest-box" id="interest-box">
+            <div class="interest-tokens" id="interest-tokens"></div>
+            <input id="interest-input" type="text" autocomplete="off" placeholder="Add a film, book, game, place…" aria-label="Add an interest" />
+          </div>
+          <p class="input-hint" id="input-hint">Press Enter to add · Mix any categories</p>
+        </div>
+
+        <div class="composer-controls">
+          <label class="field">
+            <span>Target category</span>
+            <select id="target-type">
+              <option value="artist">Artists</option>
+              <option value="book">Books</option>
+              <option value="podcast">Podcasts</option>
+              <option value="movie">Movies</option>
+              <option value="tv_show">TV shows</option>
+              <option value="video_game">Video games</option>
+              <option value="place">Places in a city</option>
+            </select>
+          </label>
+          <label class="field city-field" id="city-field" hidden>
+            <span>City</span>
+            <input id="city-input" type="text" placeholder="e.g. Kyoto" />
+          </label>
+          <div class="distance-field">
+            <div class="distance-heading"><span>Discovery distance</span><strong id="distance-value">Out of the bubble</strong></div>
+            <input id="distance" type="range" min="0" max="2" step="1" value="2" aria-label="Discovery distance" />
+            <div class="distance-labels" aria-hidden="true"><span>Next door</span><span>Across town</span><span>Out of the bubble</span></div>
+          </div>
+          <button class="primary-button" id="discover-button" type="button">
+            <span>Break the bubble</span>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h13m-5-5 5 5-5 5" /></svg>
+          </button>
+        </div>
+      </section>
+
+      <section class="empty-state" id="empty-state" hidden>
+        <div>
+          <h2>Three things are enough to leave the loop.</h2>
+          <p>Start with a ready-made constellation, then make it yours.</p>
+        </div>
+        <div class="example-list" id="example-list"></div>
+      </section>
+
+      <section class="results" id="results" aria-labelledby="results-title">
+        <div class="results-header">
+          <div>
+            <h2 id="results-title">Beyond your usual orbit</h2>
+            <p id="result-summary">Tracing cross-category affinities…</p>
+          </div>
+          <div class="mode-note" id="mode-note">Local preview</div>
+        </div>
+        <div class="card-grid" id="card-grid" aria-live="polite" aria-busy="true"></div>
+      </section>
+
+      <details class="trace-panel" id="trace-panel">
+        <summary>
+          <span>How the agent thought</span>
+          <span class="trace-status" id="trace-status">Resolving your constellation</span>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>
+        </summary>
+        <ol class="trace-list" id="trace-list"></ol>
+      </details>
+    </main>
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  </body>
+</html>

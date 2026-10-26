@@ -1,0 +1,14 @@
+[
+  { "id": "mock:insight:hollow-comet", "name": "The Hollow Comet Choir", "description": "Nomadic voices fold choral tradition into speculative electronics.", "affinityTags": ["speculative", "atmospheric"] },
+  { "id": "mock:insight:lost-weather", "name": "Maps for Lost Weather", "description": "Field recordings become haunting, human-scale compositions.", "affinityTags": ["winter", "surreal"] },
+  { "id": "mock:insight:velvet-calculus", "name": "Velvet Calculus", "description": "A tactile collision of political cabaret and fractured rhythm.", "affinityTags": ["political", "identity"] },
+  { "id": "mock:insight:silt-meridian", "name": "Silt Meridian", "description": "Migration stories drift through spare, borderless folk forms.", "affinityTags": ["anthropology", "nature"] },
+  { "id": "mock:insight:binary-gardens", "name": "The Binary Gardens", "description": "Forgotten machines bloom into patient electronic soundscapes.", "affinityTags": ["ecology", "speculative"] },
+  { "id": "mock:insight:lumen-cartographer", "name": "Lumen Cartographer", "description": "Memory and place are mapped through light, voice, and silence.", "affinityTags": ["identity", "solitude"] },
+  { "id": "mock:insight:red-forest", "name": "Red Forest Assembly", "description": "Ecological unease meets unruly communal performance.", "affinityTags": ["ecology", "activism"] },
+  { "id": "mock:insight:soft-archive", "name": "The Soft Archive", "description": "An intimate record of objects, repair, and inherited stories.", "affinityTags": ["repair", "family"] },
+  { "id": "mock:insight:tide-observatory", "name": "Tide Observatory No. 7", "description": "Coastal data becomes a slow ritual of attention.", "affinityTags": ["science", "atmospheric"] },
+  { "id": "mock:insight:paper-city", "name": "A City Made of Paper", "description": "Impossible architecture frames a warm study of belonging.", "affinityTags": ["surreal", "family"] },
+  { "id": "mock:insight:lantern-depths", "name": "Lanterns in the Depths", "description": "Bioluminescent wonder illuminates a story about adaptation.", "affinityTags": ["transformation", "nature"] },
+  { "id": "mock:insight:minor-orbits", "name": "Minor Orbits Club", "description": "Cosmic scale and domestic detail share the same strange room.", "affinityTags": ["speculative", "solitude"] }
+]
