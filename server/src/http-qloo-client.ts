@@ -72,11 +72,11 @@ export class HttpQlooClient implements QlooClient {
     const params = new URLSearchParams({
       "filter.type": `urn:entity:${query.targetType}`,
       "signal.interests.entities": query.signalEntityIds.join(","),
-      "bias.trends": query.biasTrends,
-      "diversify.by": query.diversifyBy,
       "feature.explainability": "true",
       limit: String(query.limit),
     });
+    // Real API: book does not support trending requests (400), so bias.trends is skipped for it.
+    if (query.targetType !== "book") params.set("bias.trends", query.biasTrends);
     if (query.excludeEntityIds.length) params.set("filter.exclude.entities", query.excludeEntityIds.join(","));
     if (query.city) params.set("filter.location.query", query.city);
     if (query.popularityMin !== undefined) params.set("filter.popularity.min", String(query.popularityMin));
@@ -91,7 +91,13 @@ export class HttpQlooClient implements QlooClient {
       const id = stringValue(row.entity_id, row.id, properties.entity_id, properties.id);
       const name = stringValue(row.name, properties.name, row.title, properties.title);
       if (!id || !name) return [];
-      const sourceRows = arrayAt(explainability, [["entities"], ["signals"], ["sources"]]);
+      // Real API nests explainability under row.query.explainability["signal.interests.entities"] as [{entity_id, score}].
+      const realQuery = isObject(row.query) ? row.query : {};
+      const realExplain = isObject(realQuery.explainability) ? realQuery.explainability : {};
+      const sourceRows = [
+        ...arrayAt(explainability, [["entities"], ["signals"], ["sources"]]),
+        ...arrayAt(realExplain, [["signal.interests.entities"]]),
+      ];
       const sources = sourceRows.filter(isObject);
       return [{
         id,
