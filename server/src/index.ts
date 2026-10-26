@@ -47,7 +47,7 @@ export function createApp(agent = new DiscoveryAgent(process.env.QLOO_API_KEY ? 
     } catch (error) { next(error); }
   });
 
-  app.get("/api/health", (_request, response) => response.json({ ok: true }));
+  app.get("/api/health", (_request, response) => response.json({ ok: true, mode: agent.mode }));
 
   const currentDir = dirname(fileURLToPath(import.meta.url));
   const webDir = resolve(currentDir, "../web");

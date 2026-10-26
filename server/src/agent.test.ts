@@ -14,15 +14,15 @@ const noOneLiners = async () => new Map<string, string>();
 
 describe("distance mapping", () => {
   it("keeps next-door discovery popular and entity-led", () => {
-    expect(distanceProfile(0)).toMatchObject({ label: "Next door", biasTrends: "high", diversifyBy: "entities", popularityMin: 0.55 });
+    expect(distanceProfile(0)).toMatchObject({ label: "Next door", biasTrends: "high", diversifyBy: "entities", popularityMin: 0.24 });
   });
 
   it("widens across-town discovery with tag diversity", () => {
-    expect(distanceProfile(1)).toMatchObject({ label: "Across town", biasTrends: "low", diversifyBy: "tags", popularityMin: 0.2 });
+    expect(distanceProfile(1)).toMatchObject({ label: "Across town", biasTrends: "low", diversifyBy: "tags", popularityMin: 0.08, popularityMax: 0.96 });
   });
 
   it("caps popularity at the farthest distance", () => {
-    expect(distanceProfile(2)).toMatchObject({ label: "Out of the bubble", biasTrends: "low", diversifyBy: "tags", popularityMax: 0.45 });
+    expect(distanceProfile(2)).toMatchObject({ label: "Out of the bubble", biasTrends: "low", diversifyBy: "tags", popularityMax: 0.8 });
   });
 });
 
@@ -50,9 +50,8 @@ describe("mock Qloo client", () => {
     expect(entity).toMatchObject({ id: "mock:blade-runner-2049", type: "movie" });
   });
 
-  it("resolves an arbitrary name without an environment variable", async () => {
-    const [entity] = await new MockQlooClient().search("A Thing We Just Invented");
-    expect(entity?.id).toBe("mock:interest:a-thing-we-just-invented");
+  it("does not invent an entity for an unknown name", async () => {
+    expect(await new MockQlooClient().search("A Thing We Just Invented")).toEqual([]);
   });
 
   it("honors exclusions in insights", async () => {
@@ -79,25 +78,78 @@ describe("explanation rendering", () => {
     expect(buildExplanation(insight, resolved).becauseOf).toEqual(["Second Love"]);
   });
 
-  it("falls back to the first two inputs when explainability has no sources", () => {
+  it("does not fabricate because-of evidence when explainability has no sources", () => {
     const insight: QlooInsight = { id: "x", name: "Result", type: "artist", description: "Still explained.", affinitySourceIds: [], affinitySourceNames: [] };
-    expect(buildExplanation(insight, resolved).becauseOf).toEqual(["First Love", "Second Love"]);
+    expect(buildExplanation(insight, resolved)).toEqual({ becauseOf: [], text: "Still explained." });
   });
 });
 
 describe("agent loop", () => {
-  it("returns eight cards with because-of evidence and a three-step trace", async () => {
+  it("returns eight cards with honest explainability flags and a three-step trace", async () => {
     const result = await new DiscoveryAgent(new MockQlooClient(), noOneLiners).discover(baseInput);
     expect(result.recommendations).toHaveLength(8);
-    expect(result.recommendations.every((item) => item.becauseOf.length > 0)).toBe(true);
-    expect(result.recommendations.every((item) => item.explainabilityPresent)).toBe(true);
+    expect(result.recommendations.every((item) => item.explainabilityPresent === (item.becauseOf.length > 0))).toBe(true);
     expect(result.trace.map((item) => item.stage)).toEqual(["resolve", "discover", "explain"]);
+    expect(result.trace[0]?.detail).toContain("Blade Runner 2049 → movie · mock:blade-runner-2049");
+    expect(result.trace[1]?.detail).toContain("signal.interests.entities=mock:blade-runner-2049,mock:left-hand-darkness,mock:disco-elysium");
+    expect(result.trace[1]?.detail).toContain("feature.explainability=true");
+    expect(result.trace[2]?.detail).toContain("result.count=8");
     expect(result.mode).toBe("mock");
   });
 
   it("keeps the selected target type on every card", async () => {
     const result = await new DiscoveryAgent(new MockQlooClient(), noOneLiners).discover({ ...baseInput, targetType: "book" });
     expect(new Set(result.recommendations.map((item) => item.type))).toEqual(new Set(["book"]));
+  });
+
+  it("returns unknown inputs as unresolved and never cites them", async () => {
+    const unknown = "A Thing We Just Invented";
+    const result = await new DiscoveryAgent(new MockQlooClient(), noOneLiners).discover({
+      ...baseInput,
+      interests: ["Blade Runner 2049", "The Left Hand of Darkness", unknown],
+    });
+    expect(result.unresolved).toEqual([unknown]);
+    expect(result.resolved).toHaveLength(2);
+    expect(result.recommendations.flatMap((item) => item.becauseOf)).not.toContain(unknown);
+    expect(result.trace[0]?.detail).toContain(`${unknown} → not found`);
+  });
+
+  it("returns a visible error result when every input is unresolved", async () => {
+    const result = await new DiscoveryAgent(new MockQlooClient(), noOneLiners).discover({
+      ...baseInput,
+      interests: ["Unknown One", "Unknown Two", "Unknown Three"],
+    });
+    expect(result.recommendations).toEqual([]);
+    expect(result.unresolved).toEqual(["Unknown One", "Unknown Two", "Unknown Three"]);
+    expect(result.error).toMatch(/None/);
+  });
+
+  it("changes at least four of eight cards between adjacent distance stops", async () => {
+    const agent = new DiscoveryAgent(new MockQlooClient(), noOneLiners);
+    const sets = await Promise.all(([0, 1, 2] as const).map(async (value) =>
+      new Set((await agent.discover({ ...baseInput, distance: value })).recommendations.map((item) => item.id))));
+    const changed = (left: Set<string>, right: Set<string>) => 8 - [...left].filter((id) => right.has(id)).length;
+    expect(changed(sets[0], sets[1])).toBeGreaterThanOrEqual(4);
+    expect(changed(sets[1], sets[2])).toBeGreaterThanOrEqual(4);
+  });
+
+  it("serves type-correct, uniquely named mock results for every target", async () => {
+    const client = new MockQlooClient();
+    const targets = ["artist", "book", "podcast", "movie", "tv_show", "video_game", "place"] as const;
+    const results = await Promise.all(targets.map((targetType) => client.insights({
+      targetType,
+      signalEntityIds: ["mock:blade-runner-2049"],
+      excludeEntityIds: [],
+      limit: 12,
+      biasTrends: "low",
+      diversifyBy: "tags",
+      popularityMin: 0.08,
+      popularityMax: 0.96,
+      explainability: true,
+    })));
+    const names = results.flatMap((result) => result.map((item) => item.name));
+    expect(results.every((result, index) => result.length === 12 && result.every((item) => item.type === targets[index]))).toBe(true);
+    expect(new Set(names).size).toBe(names.length);
   });
 
   it("refills with a card absent from the current result set", async () => {

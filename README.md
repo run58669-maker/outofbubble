@@ -14,7 +14,7 @@ npm test
 npm start
 ```
 
-Open <http://localhost:3000>. The first fictional constellation loads automatically. Click **Start over** to see the three empty-state examples.
+Open <http://localhost:3000>. The first fictional sample mix loads automatically. Click **Start over** to see the three empty-state examples.
 
 The deployed app is live at <https://outofbubble.onrender.com>. It runs on Render Free, so the first request after an idle period can take 50 seconds or more while the service wakes up. The page shows a wake-up notice, checks server health, and offers a retry if a request reaches the 25-second client timeout.
 
@@ -90,7 +90,7 @@ Remove Qloo and the product loses its core capability. The app does not use Qloo
 1. Qloo resolves mixed-category names into a common entity graph.
 2. Qloo turns films, books, games, brands, and places into signals for a different target category.
 3. Qloo’s insight filters implement discovery distance through trend, diversity, and popularity controls.
-4. Qloo explainability determines the “Because of…” evidence shown on every card.
+4. Qloo explainability is the only source of “Because of…” evidence; cards without a source say so plainly.
 5. Qloo exclusions power the “already know it” refill loop.
 
 The optional LLM writes only a short hook. It never selects, ranks, or explains the recommendation graph.
@@ -115,7 +115,7 @@ Copy `.env.example` into your deployment environment or set variables directly. 
 
 ## Test coverage
 
-Vitest covers distance mapping, validation, deduplication, mock resolution, exclusion, refill, explanation-source rendering, card count, target typing, trace stages, and slow-request UI thresholds. Tests never call Qloo or OpenAI.
+Vitest covers distance mapping and result-set differences, validation, deduplication, unresolved inputs, honest explanation-source rendering, exclusion, refill, card count, target typing, trace stages, and slow-request UI thresholds. Tests never call Qloo or OpenAI.
 
 ## Deploy to Render
 
@@ -133,8 +133,6 @@ Captured from the mock-mode build during local browser QA:
 ![Desktop discovery results](docs/screenshots/desktop-results.png)
 
 ![Mobile discovery flow](docs/screenshots/mobile-results.png)
-
-Devpost capture placeholder: expanded agent trace.
 
 ## License
 

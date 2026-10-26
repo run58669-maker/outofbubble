@@ -12,6 +12,10 @@ function stringValue(...values: unknown[]): string | undefined {
   return values.find((value): value is string => typeof value === "string" && value.length > 0);
 }
 
+function numberValue(...values: unknown[]): number | undefined {
+  return values.find((value): value is number => typeof value === "number" && Number.isFinite(value));
+}
+
 function arrayAt(payload: unknown, paths: string[][]): unknown[] {
   for (const path of paths) {
     let current: unknown = payload;
@@ -93,10 +97,12 @@ export class HttpQlooClient implements QlooClient {
         id,
         name,
         type: stringValue(row.type, properties.type) ?? query.targetType,
-        description: stringValue(row.description, properties.description, row.summary, properties.short_description) ?? "A cross-category connection surfaced by Qloo.",
+        description: stringValue(row.description, properties.description, row.summary, properties.short_description) ?? "",
         affinitySourceIds: sources.map((source) => stringValue(source.entity_id, source.id)).filter((item): item is string => Boolean(item)),
         affinitySourceNames: sources.map((source) => stringValue(source.name, source.title)).filter((item): item is string => Boolean(item)),
         score: typeof row.score === "number" ? row.score : undefined,
+        popularity: numberValue(row.popularity, properties.popularity, row.popularity_score, properties.popularity_score),
+        trend: numberValue(row.trend, properties.trend, row.trend_score, properties.trend_score),
       }];
     });
   }

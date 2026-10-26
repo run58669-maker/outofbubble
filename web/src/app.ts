@@ -9,9 +9,9 @@ import {
 
 type TargetType = "artist" | "book" | "podcast" | "movie" | "tv_show" | "video_game" | "place";
 type Distance = 0 | 1 | 2;
-type Recommendation = { id: string; title: string; type: TargetType; becauseOf: string[]; distance: Distance; explanation: string; oneLiner?: string; artIndex: number };
+type Recommendation = { id: string; title: string; type: TargetType; becauseOf: string[]; distance: Distance; explanation: string; oneLiner?: string; artIndex: number; explainabilityPresent: boolean; popularity?: number };
 type TraceStep = { stage: string; title: string; detail: string };
-type DiscoveryResponse = { recommendations: Recommendation[]; trace: TraceStep[]; mode: "mock" | "http" };
+type DiscoveryResponse = { recommendations: Recommendation[]; trace: TraceStep[]; mode: "mock" | "http"; unresolved: string[]; error?: string };
 
 const examples: Array<{ label: string; interests: string[]; targetType: TargetType; city?: string }> = [
   { label: "Blade Runner 2049 + The Left Hand of Darkness + Disco Elysium → artists", interests: ["Blade Runner 2049", "The Left Hand of Darkness", "Disco Elysium"], targetType: "artist" },
@@ -24,6 +24,7 @@ let interests = [...examples[0].interests];
 let recommendations: Recommendation[] = [];
 let excludedIds: string[] = [];
 let latestTrace: TraceStep[] = [];
+let unresolvedNames = new Set<string>();
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const tokens = $("interest-tokens");
@@ -61,9 +62,23 @@ function showToast(message: string) {
 
 function hideRequestStatus() {
   requestStatus.hidden = true;
-  requestStatus.classList.remove("timed-out", "awake");
+  requestStatus.classList.remove("timed-out", "awake", "error");
   requestRetry.hidden = true;
   requestRetry.onclick = null;
+}
+
+function showRequestError(message: string) {
+  requestStatus.hidden = false;
+  requestStatus.classList.remove("timed-out", "awake");
+  requestStatus.classList.add("error");
+  requestStatusCopy.textContent = message;
+  requestRetry.hidden = true;
+}
+
+function setModeBadge(mode: "mock" | "http") {
+  const badge = $("mode-note");
+  badge.className = `mode-note ${mode}`;
+  badge.textContent = mode === "mock" ? "Sample data — real Qloo key pending" : "Live Qloo";
 }
 
 function showRequestStatus(state: RequestUiState, retry?: () => void) {
@@ -92,6 +107,10 @@ function renderInterests() {
   interests.forEach((interest, index) => {
     const token = document.createElement("span");
     token.className = "interest-token";
+    if (unresolvedNames.has(interest.toLocaleLowerCase())) {
+      token.classList.add("unresolved");
+      token.title = "Not found";
+    }
     token.append(document.createTextNode(interest));
     const remove = document.createElement("button");
     remove.type = "button";
@@ -99,6 +118,7 @@ function renderInterests() {
     remove.textContent = "×";
     remove.addEventListener("click", () => {
       interests.splice(index, 1);
+      unresolvedNames.clear();
       renderInterests();
       if (interests.length === 0) showEmpty();
     });
@@ -114,11 +134,17 @@ function addInterest() {
   const value = interestInput.value.trim();
   if (!value || interests.length >= 5) return;
   if (interests.some((item) => item.toLowerCase() === value.toLowerCase())) {
-    showToast("That one is already in your constellation.");
+    showToast("That one is already in your mix.");
     return;
   }
   interests.push(value);
+  unresolvedNames.clear();
   interestInput.value = "";
+  renderInterests();
+}
+
+function markUnresolved(unresolved: string[]) {
+  unresolvedNames = new Set(unresolved.map((name) => name.toLocaleLowerCase()));
   renderInterests();
 }
 
@@ -168,7 +194,8 @@ async function api<T>(path: string, body: object, retry: () => void): Promise<T>
     const healthTimeout = window.setTimeout(() => healthController?.abort(), HEALTH_POLL_TIMEOUT_MS);
     try {
       const response = await fetch("/api/health", { cache: "no-store", signal: healthController.signal });
-      const health = response.ok ? await response.json() as { ok?: boolean } : undefined;
+      const health = response.ok ? await response.json() as { ok?: boolean; mode?: "mock" | "http" } : undefined;
+      if (health?.mode) setModeBadge(health.mode);
       if (health?.ok) showServerAwake(requestId);
     } catch {
       // The server may still be asleep. The next bounded poll will try again.
@@ -222,6 +249,13 @@ function typeLabel(type: TargetType) {
   return type.replace("_", " ").toUpperCase();
 }
 
+function obscurityLabel(popularity?: number) {
+  if (popularity === undefined) return "reach unknown";
+  if (popularity >= 0.7) return "well known";
+  if (popularity >= 0.35) return "under the radar";
+  return "deep cut";
+}
+
 function renderCard(item: Recommendation) {
   const article = document.createElement("article");
   article.className = "recommendation-card";
@@ -244,11 +278,11 @@ function renderCard(item: Recommendation) {
   const typeChip = document.createElement("span");
   typeChip.className = "type-chip";
   typeChip.textContent = typeLabel(item.type);
-  const distanceMark = document.createElement("span");
-  distanceMark.className = "distance-mark";
-  distanceMark.innerHTML = "<i aria-hidden=\"true\"></i>";
-  distanceMark.append(document.createTextNode(distanceLabels[item.distance] ?? "Far out"));
-  heading.append(h3, typeChip, distanceMark);
+  const obscurityMark = document.createElement("span");
+  obscurityMark.className = "obscurity-mark";
+  obscurityMark.innerHTML = "<i aria-hidden=\"true\"></i>";
+  obscurityMark.append(document.createTextNode(obscurityLabel(item.popularity)));
+  heading.append(h3, typeChip, obscurityMark);
 
   const reasons = document.createElement("div");
   reasons.className = "reason-list";
@@ -257,6 +291,12 @@ function renderCard(item: Recommendation) {
     chip.textContent = `Because of ${reason}`;
     reasons.append(chip);
   });
+  if (!item.explainabilityPresent || item.becauseOf.length === 0) {
+    const absent = document.createElement("p");
+    absent.className = "no-explanation";
+    absent.textContent = "Qloo did not say why";
+    reasons.append(absent);
+  }
   const footer = document.createElement("div");
   footer.className = "card-footer";
   const copy = document.createElement("p");
@@ -266,7 +306,16 @@ function renderCard(item: Recommendation) {
   known.className = "known-button";
   known.textContent = "I already know this";
   known.addEventListener("click", () => exclude(item, article, known));
-  footer.append(copy, known);
+  const actions = document.createElement("div");
+  actions.className = "card-actions";
+  const search = document.createElement("a");
+  search.className = "search-link";
+  search.href = `https://duckduckgo.com/?q=${encodeURIComponent(`${item.title} ${typeLabel(item.type).toLowerCase()}`)}`;
+  search.target = "_blank";
+  search.rel = "noopener noreferrer";
+  search.textContent = "Search the web";
+  actions.append(search, known);
+  footer.append(copy, actions);
   content.append(heading, reasons, footer);
   article.append(art, content);
   return article;
@@ -279,10 +328,12 @@ function renderResults(response: DiscoveryResponse, isDemoRun = false) {
   results.hidden = false;
   empty.hidden = true;
   $("trace-panel").hidden = false;
-  $("result-summary").textContent = `${recommendations.length} new paths, connected to what you already love.`;
-  $("mode-note").textContent = response.mode === "mock" ? "Preview constellation" : "Live Qloo signal";
+  $("result-summary").textContent = response.error ?? `${recommendations.length} new paths, connected to what you already love.`;
+  setModeBadge(response.mode);
   demoPill.hidden = !isDemoRun;
   renderTrace(response.trace, recommendations.length);
+  $<HTMLDetailsElement>("trace-panel").open = isDemoRun;
+  if (response.error) showRequestError(response.error);
 }
 
 function renderTrace(trace: TraceStep[], countFound: number) {
@@ -318,9 +369,12 @@ async function discover(isDemoRun = false) {
   results.hidden = false;
   empty.hidden = true;
   setLoading(true);
+  unresolvedNames.clear();
+  renderInterests();
   try {
     excludedIds = [];
     const response = await api<DiscoveryResponse>("/api/discover", currentInput(), () => void discover(isDemoRun));
+    markUnresolved(response.unresolved);
     renderResults(response, isDemoRun);
   } catch (error) {
     if (error instanceof RequestTimeoutError) {
@@ -375,6 +429,7 @@ function renderExamples() {
     button.append(document.createTextNode(example.label));
     button.addEventListener("click", () => {
       interests = [...example.interests];
+      unresolvedNames.clear();
       target.value = example.targetType;
       cityInput.value = example.city ?? "";
       updateTarget();
@@ -406,6 +461,7 @@ demoPill.addEventListener("click", () => {
 });
 $("clear-button").addEventListener("click", () => {
   interests = [];
+  unresolvedNames.clear();
   recommendations = [];
   excludedIds = [];
   renderInterests();

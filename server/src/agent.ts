@@ -25,16 +25,44 @@ export function validateDiscoverInput(input: DiscoverInput): DiscoverInput {
 
 export function buildExplanation(insight: QlooInsight, resolved: ResolvedEntity[]): { becauseOf: string[]; text: string } {
   const byId = new Map(resolved.map((entity) => [entity.id, entity.name]));
+  const resolvedNames = new Map(resolved.map((entity) => [entity.name.toLocaleLowerCase(), entity.name]));
   const names = [
-    ...insight.affinitySourceNames,
+    ...insight.affinitySourceNames
+      .map((name) => resolvedNames.get(name.toLocaleLowerCase()))
+      .filter((name): name is string => Boolean(name)),
     ...insight.affinitySourceIds.map((id) => byId.get(id)).filter((name): name is string => Boolean(name)),
   ];
   const becauseOf = [...new Set(names)].slice(0, 2);
-  const fallback = resolved.slice(0, 2).map((entity) => entity.name);
   return {
-    becauseOf: becauseOf.length > 0 ? becauseOf : fallback,
-    text: insight.description || "Qloo found an unexpected bridge across your interests.",
+    becauseOf,
+    text: insight.description,
   };
+}
+
+function formatInsightsQuery(query: {
+  targetType: string;
+  signalEntityIds: string[];
+  excludeEntityIds: string[];
+  limit: number;
+  city?: string;
+  biasTrends: string;
+  diversifyBy: string;
+  popularityMin?: number;
+  popularityMax?: number;
+}): string {
+  const parameters = [
+    `filter.type=urn:entity:${query.targetType}`,
+    `signal.interests.entities=${query.signalEntityIds.join(",")}`,
+    `bias.trends=${query.biasTrends}`,
+    `diversify.by=${query.diversifyBy}`,
+    `limit=${query.limit}`,
+  ];
+  if (query.popularityMin !== undefined) parameters.push(`filter.popularity.min=${query.popularityMin}`);
+  if (query.popularityMax !== undefined) parameters.push(`filter.popularity.max=${query.popularityMax}`);
+  if (query.city) parameters.push(`filter.location.query=${query.city}`);
+  parameters.push(`filter.exclude.entities=${query.excludeEntityIds.length ? query.excludeEntityIds.join(",") : "(not sent)"}`);
+  parameters.push("feature.explainability=true");
+  return parameters.join("\n");
 }
 
 export class DiscoveryAgent {
@@ -43,25 +71,49 @@ export class DiscoveryAgent {
     private readonly oneLiners: typeof generateOneLiners = generateOneLiners,
   ) {}
 
-  async resolve(interests: string[]): Promise<ResolvedEntity[]> {
+  get mode(): QlooClient["mode"] {
+    return this.qloo.mode;
+  }
+
+  private async resolveInputs(interests: string[]): Promise<{ resolved: ResolvedEntity[]; unresolved: string[]; detail: string }> {
     const unique = normalizeInterestNames(interests);
-    return (await Promise.all(unique.map(async (interest) => (await this.qloo.search(interest))[0])))
-      .filter((entity): entity is ResolvedEntity => Boolean(entity));
+    const matches = await Promise.all(unique.map(async (interest) => ({ interest, entity: (await this.qloo.search(interest))[0] })));
+    const resolved = matches.map((match) => match.entity).filter((entity): entity is ResolvedEntity => Boolean(entity));
+    const unresolved = matches.filter((match) => !match.entity).map((match) => match.interest);
+    const detail = matches.map((match) => match.entity
+      ? `${match.interest} → ${match.entity.type} · ${match.entity.id}`
+      : `${match.interest} → not found`).join("\n");
+    return { resolved, unresolved, detail };
+  }
+
+  async resolve(interests: string[]): Promise<ResolvedEntity[]> {
+    return (await this.resolveInputs(interests)).resolved;
   }
 
   async discover(rawInput: DiscoverInput): Promise<DiscoveryResult> {
     const input = validateDiscoverInput(rawInput);
     const trace: TraceStep[] = [];
-    const resolved = await this.resolve(input.interests);
-    if (resolved.length !== input.interests.length) throw new Error("One or more interests could not be resolved by Qloo.");
+    const { resolved, unresolved, detail: resolveDetail } = await this.resolveInputs(input.interests);
     trace.push({
       stage: "resolve",
       title: "Resolve",
-      detail: `Matched ${resolved.length} interests across ${new Set(resolved.map((item) => item.type)).size} categories.`,
+      detail: resolveDetail,
     });
 
+    if (resolved.length === 0) {
+      trace.push({ stage: "explain", title: "Result", detail: "result.count=0" });
+      return {
+        recommendations: [],
+        resolved,
+        unresolved,
+        trace,
+        mode: this.qloo.mode,
+        error: "None of those interests were found. Try at least one known title or name.",
+      };
+    }
+
     const profile = distanceProfile(input.distance);
-    const insights = await this.qloo.insights({
+    const insightsQuery = {
       targetType: input.targetType,
       signalEntityIds: resolved.map((entity) => entity.id),
       excludeEntityIds: input.excludeIds ?? [],
@@ -71,12 +123,13 @@ export class DiscoveryAgent {
       diversifyBy: profile.diversifyBy,
       popularityMin: profile.popularityMin,
       popularityMax: profile.popularityMax,
-      explainability: true,
-    });
+      explainability: true as const,
+    };
+    const insights = await this.qloo.insights(insightsQuery);
     trace.push({
       stage: "discover",
-      title: "Discover",
-      detail: `Asked Qloo for ${profile.label.toLowerCase()} ${input.targetType.replace("_", " ")} connections with explainability on.`,
+      title: "Insights query",
+      detail: formatInsightsQuery(insightsQuery),
     });
 
     const oneLiners = await this.oneLiners(insights);
@@ -91,16 +144,17 @@ export class DiscoveryAgent {
         explanation: explanation.text,
         oneLiner: oneLiners.get(insight.id),
         artIndex: index % 10,
-        explainabilityPresent: insight.affinitySourceIds.length > 0 || insight.affinitySourceNames.length > 0,
+        explainabilityPresent: explanation.becauseOf.length > 0,
+        popularity: insight.popularity,
       };
     });
     trace.push({
       stage: "explain",
-      title: "Explain",
-      detail: `Kept ${recommendations.length} paths and linked each one back to the interests that pulled it in.`,
+      title: "Result",
+      detail: `result.count=${recommendations.length}\nexplainability.present=${recommendations.filter((item) => item.explainabilityPresent).length}/${recommendations.length}`,
     });
 
-    return { recommendations, resolved, trace, mode: this.qloo.mode };
+    return { recommendations, resolved, unresolved, trace, mode: this.qloo.mode };
   }
 
   async refill(rawInput: DiscoverInput, currentIds: string[], knownId: string): Promise<DiscoveryResult> {
@@ -109,7 +163,7 @@ export class DiscoveryAgent {
     result.trace.push({
       stage: "refill",
       title: "Refill",
-      detail: `Excluded the known item and refilled from a new Qloo path.`,
+      detail: `filter.exclude.entities=${excludeIds.join(",")}`,
     });
     return result;
   }

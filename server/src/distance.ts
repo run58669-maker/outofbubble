@@ -14,19 +14,20 @@ export function distanceProfile(distance: Distance): DistanceProfile {
       label: "Next door",
       biasTrends: "high",
       diversifyBy: "entities",
-      popularityMin: 0.55,
+      popularityMin: 0.24,
     },
     1: {
       label: "Across town",
       biasTrends: "low",
       diversifyBy: "tags",
-      popularityMin: 0.2,
+      popularityMin: 0.08,
+      popularityMax: 0.96,
     },
     2: {
       label: "Out of the bubble",
       biasTrends: "low",
       diversifyBy: "tags",
-      popularityMax: 0.45,
+      popularityMax: 0.8,
     },
   };
   return profiles[distance];

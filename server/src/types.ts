@@ -39,6 +39,8 @@ export interface QlooInsight {
   affinitySourceIds: string[];
   affinitySourceNames: string[];
   score?: number;
+  popularity?: number;
+  trend?: number;
 }
 
 export interface QlooClient {
@@ -63,6 +65,7 @@ export interface Recommendation {
   oneLiner?: string;
   artIndex: number;
   explainabilityPresent: boolean;
+  popularity?: number;
 }
 
 export interface DiscoverInput {
@@ -77,6 +80,8 @@ export interface DiscoverInput {
 export interface DiscoveryResult {
   recommendations: Recommendation[];
   resolved: ResolvedEntity[];
+  unresolved: string[];
   trace: TraceStep[];
   mode: "mock" | "http";
+  error?: string;
 }
