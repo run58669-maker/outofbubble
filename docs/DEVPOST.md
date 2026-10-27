@@ -1,6 +1,6 @@
 # Devpost submission draft: Out of the Bubble
 
-> Status: draft, 2026-10-27. The resolver, badge thresholds, far-out cap and decision step changed on 2026-10-27, so every number marked `<<MEASURE>>` must be re-measured on the live site's own `/api/discover` (real Qloo key, mode `http`) after the deploy. Numbers not marked come from earlier live calls and stay valid only if a re-measure confirms them.
+> Status: final text. All numbers: live site `/api/discover` and `/api/resolve` (real Qloo key), 2026-10-27.
 
 ## Project name
 Out of the Bubble
@@ -37,28 +37,32 @@ The agent returns 10 ranked cards. Each card shows the recommendation, its categ
 
 If you already know one, press **"I already know this."** The agent excludes it, along with everything currently on screen, and refills that slot with a new result. The **"How the agent thought"** panel shows each step of the run: Resolve, Discover, Decide, Explain, and Refill after an exclusion.
 
-**A real run** (live site, <<MEASURE>> date). Input: *Blade Runner 2049*, *The Left Hand of Darkness*, *Disco Elysium*. Target: artists.
+**A real run** (live site, 2026-10-27). Input: *Blade Runner 2049*, *The Left Hand of Darkness*, *Disco Elysium*. Target: artists.
 
 | Distance | First results (Qloo order) | Mean popularity of the 10 results |
 |---|---|---|
 | Next door | Oneohtrix Point Never, Yves Tumor, Iglooghost, Against All Logic, Aphex Twin | 0.971 (range 0.882 to 0.999) |
 | Across town | Daniel Lopatin, Hiroshi Yoshimura, Lingua Ignota, Spellling, Mid-Air Thief | 0.901 (range 0.611 to 0.955) |
-| Out of the bubble | <<MEASURE>> (cap is now 0.65) | <<MEASURE>> |
+| Out of the bubble | Rural Internet, Voyage Futur, Sofie Birch, Dear Laika, Argo Nuff | 0.405 (range 0.131 to 0.619) |
 
-"Next door" and "Out of the bubble" share **<<MEASURE>> of 10** results; neighboring stops share <<MEASURE>> of 10. Cards carry Qloo explainability chips such as "Because of Disco Elysium". Explainability per example (cards with at least one source, at Out of the bubble):
+"Next door" and "Out of the bubble" share **0 of 10** results; neighboring stops share 1 of 10. A film and a game reached 10 musicians, which is the cross-category jump the project is about.
 
-| Example | Resolves to | Explained |
-|---|---|---|
-| 01 Blade Runner 2049 + The Left Hand of Darkness + Disco Elysium → artists | movie, book, video_game | <<MEASURE>>/10 |
-| 02 Nausicaa + Braiding Sweetgrass + Patagonia → places in Kyoto | movie, book, brand | <<MEASURE>>/10 |
-| 03 Hades + Hadestown + Circe → podcasts | video_game, place (the Broadway production), book | <<MEASURE>>/10 |
+All three examples at all three stops. Each cell: cards with a Qloo explanation · mean popularity (range).
+
+| Example → resolves to | Next door | Across town | Out of the bubble | Shared cards ND–AT / AT–OB / ND–OB |
+|---|---|---|---|---|
+| 01 → artists (movie, book, video_game) | 10/10 · 0.971 (0.882–0.999) | 10/10 · 0.901 (0.611–0.955) | 10/10 · 0.405 (0.131–0.619) | 1 / 1 / 0 |
+| 02 → places in Kyoto (movie, book, brand) | 10/10 · 0.711 (0.449–0.989) | 10/10 · 0.631 (0.179–0.927) | 10/10 · 0.338 (0.013–0.550) | 7 / 5 / 4 |
+| 03 → podcasts (video_game, place, book) | 10/10 · 0.983 (0.942–0.999) | 10/10 · 0.891 (0.718–0.959) | 10/10 · 0.510 (0.100–0.629) | 2 / 0 / 0 |
+
+All nine runs logged "Decision: kept first query (10 results, 10/10 explained)", so the retry did not fire on these inputs. Kyoto places overlap more between stops: the city filter leaves a smaller pool.
 
 Each card's popularity badge uses fixed thresholds on Qloo popularity: "well known" from 0.85, "familiar" from 0.6 to 0.85, "deep cut" below 0.6. The far-out cap (0.65) sits below the "well known" floor, so an Out-of-the-bubble card can never be labelled "well known".
 
 ## How I built it
 
 - **Server:** Node.js 20 + TypeScript, Express. One process serves the API (`/api/resolve`, `/api/discover`, `/api/exclude`) and the compiled front end.
-- **Agent loop** (`server/src/agent.ts`): resolve → insights → explain → (on "I already know this") exclude + refill. Every step writes to an in-memory trace that the UI renders.
+- **Agent loop** (`server/src/agent.ts`): Resolve → Discover → Decide → Explain, plus Refill on "I already know this" (these are the trace step names). Every step writes to an in-memory trace that the UI renders.
 - **Qloo integration** (`server/src/http-qloo-client.ts`), server-side only, `X-Api-Key` header, `https://hackathon.api.qloo.com`:
   - `GET /search` resolves free-text names from any category into Qloo entity IDs.
   - `GET /v2/insights` with `filter.type=urn:entity:<target>` and `signal.interests.entities=<the resolved IDs>`: the user's cross-category taste becomes the signal for a different target category.
@@ -78,22 +82,22 @@ Each card's popularity badge uses fixed thresholds on Qloo popularity: "well kno
 
 Remove Qloo and nothing is left to recommend. The app has no catalog, no ratings, and no co-occurrence data of its own. Qloo does every step that matters: it turns "a film, a book and a game" into entities in one shared taste graph (`/search`), it turns those entities into a ranked set of artists, books, podcasts or places (`/v2/insights` with `signal.interests.entities`), it supplies the "because of" evidence (`feature.explainability`), it implements the comfort-zone slider (`bias.trends` and popularity filters), and it runs the refill loop (`filter.exclude.entities`). An LLM on its own could name "artists for fans of Blade Runner," but it can't show measured cross-category affinity or which of your inputs produced a result, and it would drift back toward the famous names this project exists to avoid. The optional LLM only writes a one-line hook over results Qloo already chose.
 
-In the live run above, the three distance settings return three nearly disjoint sets of 10 artists from the same three inputs (<<MEASURE>> shared between neighboring stops, <<MEASURE>> between the two ends), and the mean popularity of the result set drops from <<MEASURE>> to <<MEASURE>>. Those are Qloo's popularity and trend signals doing the work, not prompt wording. (I did not run a head-to-head against a plain LLM, so I make no claim about what one would suggest.)
+In the live run above, the three distance settings return three nearly disjoint sets of 10 artists from the same three inputs (1 shared artist between neighboring stops, 0 between the two ends), and the mean popularity of the result set drops from 0.971 to 0.405. Those are Qloo's popularity and trend signals doing the work, not prompt wording. (I did not run a head-to-head against a plain LLM, so I make no claim about what one would suggest.)
 
 ## Challenges I ran into
 
 - **Building before the API key arrived.** Hackathon keys are issued by hand. I designed one `QlooClient` interface with two implementations, a mock client backed by clearly fictional fixtures and an HTTP client for the real API, so the full product (UI, agent loop, refill, trace, deploy) could be built and tested while I waited.
-- **Making "distance from your comfort zone" concrete.** A slider means nothing unless it maps to real parameters. I mapped each of the three stops to a specific combination of trend bias and popularity bounds. On the live API the three stops do produce different sets: `bias.trends=high` + `filter.popularity.min=0.24` for Next door; `bias.trends=low` + popularity between 0.08 and 0.96 for Across town; `bias.trends=low` + `filter.popularity.max=0.65` for Out of the bubble. Result-set overlap is <<MEASURE>> of 10 between the two ends.
+- **Making "distance from your comfort zone" concrete.** A slider means nothing unless it maps to real parameters. I mapped each of the three stops to a specific combination of trend bias and popularity bounds. On the live API the three stops do produce different sets: `bias.trends=high` + `filter.popularity.min=0.24` for Next door; `bias.trends=low` + popularity between 0.08 and 0.96 for Across town; `bias.trends=low` + `filter.popularity.max=0.65` for Out of the bubble. Result-set overlap is 0 of 10 between the two ends.
 - **Refill without sessions.** To keep the server stateless, every refill request carries the IDs already on screen, so the agent can exclude them all and return exactly one new card.
 - **Cold starts on a free host.** The first request after idle can take 50+ seconds. Rather than show a frozen page, the UI shows a wake-up notice, polls health, and offers a retry after a client timeout.
-- **Real responses differed from my assumptions.** (0) My first resolver took names at face value: *Nausicaa*, *Braiding Sweetgrass* and *Patagonia* all resolved to towns, and *Hades* to a black-metal band. The fix is the type-aware resolver above. (1) `/v2/insights` silently ignored the `limit=8` I first sent and returned its default page of 20; the API pages with `take`, which is what the client sends now; (2) `/search` returns fuzzy hits even for nonsense, so taking the first hit turned made-up names into unrelated entities; (3) the cards used to show at most two "Because of" sources, and with that cut *The Left Hand of Darkness* never appeared. With every source shown, it <<MEASURE: appears on N of 10 cards / still never appears>>; (4) an artist can be a collaboration entity (for example "Ape Escape,Soichi Terada").
+- **Real responses differed from my assumptions.** (0) My first resolver took names at face value: *Nausicaa*, *Braiding Sweetgrass* and *Patagonia* all resolved to towns, and *Hades* to a black-metal band. The fix is the type-aware resolver above. Unhinted, *Hadestown* resolves to a book; Qloo also holds an album, a "Hadestown: The Musical" film and the Broadway production as a place, and the example pins the place. (1) `/v2/insights` silently ignored the `limit=8` I first sent and returned its default page of 20; the API pages with `take`, which is what the client sends now; (2) `/search` returns fuzzy hits even for nonsense, so taking the first hit turned made-up names into unrelated entities; (3) Qloo returns exactly two explainability sources per card, with scores that sum to 1. In 90 live cards (3 examples × 3 stops) the third input was never cited: *The Left Hand of Darkness*, *Nausicaa* and *Hadestown* resolve to the right entities but appear on 0 cards. The app shows every source Qloo returns, so this is Qloo's choice, not a display cut; (4) an artist can be a collaboration entity (for example "Ape Escape,Soichi Terada").
 
 ## Accomplishments that I'm proud of
 
 - Each card says **why** it's there, in terms of the user's own inputs. Explanation isn't an afterthought.
 - The comfort-zone slider is a real control backed by Qloo parameters, not a decorative label.
 - The "I already know this" loop. Telling the agent what you already know immediately produces something new.
-- The full product was built and tested before the key arrived, then switched to the real API by setting one environment variable. The live site answered `/api/discover` in 3.1 to 3.4 s in three warm calls.
+- The full product was built and tested before the key arrived, then switched to the real API by setting one environment variable.
 - The Qloo key stays server-side, no personal data is sent (only entity names and IDs), and no Qloo responses are committed.
 
 ## What I learned
@@ -101,14 +105,13 @@ In the live run above, the three distance settings return three nearly disjoint 
 - Cross-category signals are the interesting part. A recommendation for music reached through a book says something a music-only recommender can't.
 - Explainability changes how a recommendation feels. "Because of *Disco Elysium*" makes an unfamiliar name worth a click.
 - Designing the client interface first, and keeping fixtures clearly fake, kept the project honest and testable before real data existed.
-- Real explainability data names the source entities with a score each. I first cut the list at two names, which hid part of the story; now every source is shown, strongest first, with the score on hover. Inputs are not equally influential: <<MEASURE: which inputs Qloo credits for example 01>>.
-- Verify every API parameter against what comes back. Qloo silently ignored `limit` and returned 20 results; only counting the cards exposed it, and the fix was `take=10`. In the same pass I stopped trusting `/search`'s first hit: the resolver now searches by type, picks the hit whose name best matches the input, and counts a partial match only when the whole input appears inside the hit's name (so "Flimzap Nonexistent" no longer matches an album called "Nonexistent", and "Zzyzx Nonexistent Book" is reported as not found). If none of the inputs matches a real entity, the agent refuses to run: no insights call, no cards, and a clear message instead of "10 new paths".
+- Inputs are not equally influential. Qloo names two sources per card with a score each (e.g. 0.56 / 0.44); in example 01 it credits *Blade Runner 2049* and *Disco Elysium* on all 30 cards and the book on none.
+- Verify every API parameter against what comes back. Qloo silently ignored `limit` and returned 20 results; only counting the cards exposed it, and the fix was `take=10`. In the same pass I stopped trusting `/search`'s first hit: the resolver now searches by type, picks the hit whose name best matches the input, and counts a partial match only when the whole input appears inside the hit's name ("Flimzap Nonexistent" no longer matches an album called "Nonexistent"). If none of the inputs matches a real entity, the agent refuses to run: no insights call, no cards, and a clear message instead of "10 new paths".
 
 ## What's next
 
 - Show explainability strength per source as a small bar on each "because of" chip, not only in the tooltip.
 - Let users list things they already know up front (seed `filter.exclude.entities`) instead of only rejecting cards one at a time.
-- Remember a user's picks from the match picker across sessions.
 - "Open in…" links on each card (streaming / bookstore / map) so a discovery is one click from being tried.
 - A shareable link for a constellation, so friends can see where your taste leads.
 

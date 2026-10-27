@@ -66,7 +66,7 @@ Browser
           │
           ▼
   DiscoveryAgent
-    resolve → insights → explain → exclude + refill
+    Resolve → Discover → Decide → Explain → (exclude) Refill
           │
           ├─ MockQlooClient (no QLOO_API_KEY)
           └─ HttpQlooClient (QLOO_API_KEY present)
@@ -79,7 +79,7 @@ The Express server serves the API and the compiled vanilla TypeScript single pag
 
 ### API routes
 
-- `POST /api/resolve` resolves interest names into entity IDs.
+- `POST /api/resolve` resolves interest names (optionally `{ name, type }`) into entity IDs; with `alternatives: true` it also returns up to three other matches per input.
 - `POST /api/discover` resolves inputs, maps discovery distance to Qloo controls, requests explainable insights (`take=10`), and returns up to 10 cards.
 - `POST /api/exclude` excludes a known card plus the visible result set and refills with a fresh result.
 
@@ -115,7 +115,7 @@ Copy `.env.example` into your deployment environment or set variables directly. 
 
 ## Test coverage
 
-Vitest covers distance mapping and result-set differences, validation, deduplication, unresolved inputs, honest explanation-source rendering, exclusion, refill, card count, target typing, trace stages, and slow-request UI thresholds. Tests never call Qloo or OpenAI.
+Vitest (39 tests in 3 files) covers the type-aware resolver and its 4xx fallback, the decision step, badge thresholds, distance mapping and result-set differences, validation, deduplication, unresolved inputs, honest explanation-source rendering, exclusion, refill, card count, target typing, trace stages, and slow-request UI thresholds. Tests never call Qloo or OpenAI.
 
 ## Deploy to Render
 
@@ -136,11 +136,11 @@ Captured from the live deployment (https://outofbubble.onrender.com, real Qloo d
 
 ![Live results](docs/screenshots/02_results.png)
 
-*Blade Runner 2049 + The Left Hand of Darkness + Disco Elysium, target artists, "Out of the bubble": 10 live Qloo results, each with "Because of" chips.*
+*Blade Runner 2049 + The Left Hand of Darkness + Disco Elysium, target artists, "Out of the bubble": 10 live Qloo results, each with every "Because of" source Qloo returned and a popularity badge (well known ≥ 0.85, familiar 0.6–0.85, deep cut < 0.6); input tokens show their matched type.*
 
 ![How the agent thought](docs/screenshots/03_trace.png)
 
-*The "How the agent thought" panel: resolved Qloo entity IDs, the exact `/v2/insights` parameters sent (including `take=10`), the count Qloo returned, and `explainability.present=10/10`.*
+*The "How the agent thought" panel: resolved Qloo entity IDs, the exact `/v2/insights` parameters sent (including `take=10`), the count Qloo returned, the Decide line ("kept first query (10 results, 10/10 explained)"), and `explainability.present=10/10`.*
 
 ![Mobile results](docs/screenshots/04_mobile.png)
 
