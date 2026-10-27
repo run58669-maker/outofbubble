@@ -1,6 +1,6 @@
 # Devpost submission draft: Out of the Bubble
 
-> Status: final text. All numbers: live site `/api/discover` and `/api/resolve` (real Qloo key), 2026-10-27.
+> Status: final text. All numbers: live site `/api/discover` (real Qloo key), 2026-10-27 with the taste bridge deployed (commit a88cab7, one call per cell). Cells marked † come from the earlier pre-bridge run the same day.
 
 ## Project name
 Out of the Bubble
@@ -8,7 +8,6 @@ Out of the Bubble
 ## Tagline (≤60 chars)
 Your films, books and games pick your next obsession.
 
-<!-- 53 chars. Alternate: "Let your favorite film choose your next band." (45) -->
 
 ## Inspiration
 
@@ -41,21 +40,21 @@ If you already know one, press **"I already know this."** The agent excludes it,
 
 | Distance | First results (Qloo order) | Mean popularity of the 10 results |
 |---|---|---|
-| Next door | Oneohtrix Point Never, Yves Tumor, Iglooghost, Against All Logic, Aphex Twin | 0.971 (range 0.882 to 0.999) |
-| Across town | Daniel Lopatin, Hiroshi Yoshimura, Lingua Ignota, Spellling, Mid-Air Thief | 0.901 (range 0.611 to 0.955) |
-| Out of the bubble | Rural Internet, Voyage Futur, Sofie Birch, Dear Laika, Argo Nuff | 0.405 (range 0.131 to 0.619) |
+| Next door | Oneohtrix Point Never, Yves Tumor, Iglooghost, Against All Logic, Aphex Twin | 0.845 (range 0.336 to 0.999) |
+| Across town | Daniel Lopatin, Hiroshi Yoshimura, Lingua Ignota, Spellling, Mid-Air Thief | 0.824 (range 0.336 to 0.955) |
+| Out of the bubble | Rural Internet, Voyage Futur, Sofie Birch, Dear Laika, Argo Nuff | 0.379 (range 0.082 to 0.619) |
 
-"Next door" and "Out of the bubble" share **0 of 10** results; neighboring stops share 1 of 10. Qloo credited the film and the game on all 10 cards and the book on none (re-measured once on 2026-10-27: *Blade Runner 2049* 10/10, *The Left Hand of Darkness* 0/10, *Disco Elysium* 10/10). That gap is what the taste bridge closes.
+Before the bridge, Qloo credited the film and the game on all 10 first-query cards and the book on none (*Blade Runner 2049* 10/10, *The Left Hand of Darkness* 0/10, *Disco Elysium* 10/10). The bridge ran at all three stops and ended with the same split: after one extra query, citations are *Blade Runner 2049* 6, *Disco Elysium* 6, *The Left Hand of Darkness* 4 (4 merged, 4 dropped). "Next door" and "Out of the bubble" share 1 of 10 results (a bridge card, *Lacarno & Burns*); Across town and Out of the bubble share 1 of 10; Next door and Across town share 5 of 10, because the book-seeded bridge cards barely move with distance (the same 4 at both stops).
 
 All three examples at all three stops. Each cell: cards with a Qloo explanation · mean popularity (range).
 
 | Example → resolves to | Next door | Across town | Out of the bubble | Shared cards ND–AT / AT–OB / ND–OB |
 |---|---|---|---|---|
-| 01 → artists (movie, book, video_game) | 10/10 · 0.971 (0.882–0.999) | 10/10 · 0.901 (0.611–0.955) | 10/10 · 0.405 (0.131–0.619) | 1 / 1 / 0 |
-| 02 → places in Kyoto (movie, book, brand) | 10/10 · 0.711 (0.449–0.989) | 10/10 · 0.631 (0.179–0.927) | 10/10 · 0.338 (0.013–0.550) | 7 / 5 / 4 |
-| 03 → podcasts (video_game, place, book) | 10/10 · 0.983 (0.942–0.999) | 10/10 · 0.891 (0.718–0.959) | 10/10 · 0.510 (0.100–0.629) | 2 / 0 / 0 |
+| 01 → artists (movie, book, video_game) | 10/10 · 0.845 (0.336–0.999) | 10/10 · 0.824 (0.336–0.955) | 10/10 · 0.379 (0.082–0.619) | 5 / 1 / 1 |
+| 02 → places in Kyoto (movie, book, brand) | 10/10 · 0.711 (0.449–0.989) † | 10/10 · 0.631 (0.179–0.927) † | 10/10 · 0.308 (0.002–0.550) | 7 / 5 / 4 † |
+| 03 → podcasts (video_game, place, book) | 10/10 · 0.983 (0.942–0.999) † | 10/10 · 0.891 (0.718–0.959) † | 10/10 · 0.510 (0.100–0.629) † | 2 / 0 / 0 † |
 
-All nine runs logged "Decision: kept first query (10 results, 10/10 explained)", so the retry did not fire on these inputs. Kyoto places overlap more between stops: the city filter leaves a smaller pool.
+The four re-measured cells each logged "Decision: kept first query (10 results, 10/10 explained)" and ran the bridge. Example 02 at Out of the bubble: *Braiding Sweetgrass* 6 · *Patagonia* 6 · *Nausicaa* 4 (bridge on the film, not the book). † cells are pre-bridge and were not re-measured. Kyoto places overlap more between stops: the city filter leaves a smaller pool.
 
 Each card's popularity badge uses fixed thresholds on Qloo popularity: "well known" from 0.85, "familiar" from 0.6 to 0.85, "deep cut" below 0.6. The far-out cap (0.65) sits below the "well known" floor, so an Out-of-the-bubble card can never be labelled "well known".
 
@@ -75,7 +74,7 @@ Each card's popularity badge uses fixed thresholds on Qloo popularity: "well kno
 - **Front end:** a single static HTML page with a small amount of vanilla TypeScript bundled by esbuild. No framework, no canvas. Two-column card grid on desktop, one column on phones; motion respects `prefers-reduced-motion`.
 - **Type-aware resolver:** `/search` runs with Qloo's `types` filter: only the hinted type when an input carries one, otherwise films, books, games, TV, artists, podcasts and brands, with localities and venues never allowed to win an unhinted input; an untyped search is the fallback and obeys the same rules. Each input shows the type it matched as a small chip, and clicking it lists the top three other Qloo matches so the user can switch.
 - **Self-correction:** if fewer than 6 results came back or under half are explained, the agent retries once with one looser setting, keeps the better run, and logs a `Decision: … because …` line.
-- **Taste bridge (the agent's real decision):** after the first insights call the agent counts how many cards cite each input through explainability. If an input is cited by none, it runs one extra `/v2/insights` call seeded with that input alone (same type and distance parameters, `take=4`, first-page IDs excluded), merges the new cards, and drops the lowest-affinity cards from the first page (never an input's only citation) so the page stays at 10. The trace logs `Decision: The Left Hand of Darkness was cited by 0 of 10 cards → ran one extra query seeded with it alone; merged N cards`, or `Decision: every input is represented (…)` when nothing is missing. On the live default example the book is cited 0/10, so the bridge runs.
+- **Taste bridge (the agent's real decision):** after the first insights call the agent counts how many cards cite each input through explainability. If an input is cited by none, it runs one extra `/v2/insights` call seeded with that input alone (same type and distance parameters, `take=4`, first-page IDs excluded), merges the new cards, and drops the lowest-affinity cards from the first page (never an input's only citation) so the page stays at 10. The trace logs `Decision: The Left Hand of Darkness was cited by 0 of 10 cards → ran one extra query seeded with it alone; merged N cards`, or `Decision: every input is represented (…)` when nothing is missing. On the live default example the book is cited 0/10, so the bridge runs: 4 cards merged, 4 dropped, final citations 6 / 6 / 4. On example 02 the bridged input is *Nausicaa*.
 - **Resolved-id reuse:** after the first run the browser sends each input back as `{id, name, type}`, so refills, slider moves and picker switches skip `/search` (the trace says "reused 3 resolved ids"). Fewer Qloo calls, and an input can't drift to a different entity mid-session.
 - **Testing:** Vitest suite running against a deterministic mock Qloo client with hand-written fictional fixtures (no real Qloo data is stored in the repo). 46 tests in 4 files pass (`npm test`); the mock exercises both bridge branches.
 - **Hosting:** Docker on Render (free tier), with a `render.yaml` blueprint. Because the free tier sleeps, the page detects slow cold starts, polls `/api/health`, and offers a retry instead of hanging.
@@ -84,13 +83,13 @@ Each card's popularity badge uses fixed thresholds on Qloo popularity: "well kno
 
 Remove Qloo and nothing is left to recommend. The app has no catalog, no ratings, and no co-occurrence data of its own. Qloo does every step that matters: it turns "a film, a book and a game" into entities in one shared taste graph (`/search`), it turns those entities into a ranked set of artists, books, podcasts or places (`/v2/insights` with `signal.interests.entities`), it supplies the "because of" evidence (`feature.explainability`), it implements the comfort-zone slider (`bias.trends` and popularity filters), and it runs the refill loop (`filter.exclude.entities`). An LLM on its own could name "artists for fans of Blade Runner," but it can't show measured cross-category affinity or which of your inputs produced a result, and it would drift back toward the famous names this project exists to avoid. The optional LLM only writes a one-line hook over results Qloo already chose.
 
-In the live run above, the three distance settings return nearly disjoint sets of 10 artists from the same inputs, and mean popularity drops from 0.971 to 0.405: Qloo's popularity and trend signals doing the work, not prompt wording. (I ran no head-to-head against a plain LLM, so I make no claim about one.)
+In the live run above, the end stops return nearly disjoint sets of 10 artists from the same inputs, and mean popularity drops from 0.845 to 0.379 and Next door and Out of the bubble share only 1 of 10 cards: Qloo's popularity and trend signals doing the work, not prompt wording. (I ran no head-to-head against a plain LLM, so I make no claim about one.)
 
 ## Challenges I ran into
 
 - **Building before the API key arrived.** One `QlooClient` interface with a mock client (clearly fictional fixtures) and an HTTP client let the whole product be built and tested while I waited for the key.
-- **Making "distance from your comfort zone" concrete.** A slider means nothing unless it maps to real parameters, so each stop is a fixed combination of `bias.trends` and popularity bounds (Out of the bubble: `bias.trends=low` + `filter.popularity.max=0.65`). Result-set overlap is 0 of 10 between the two ends.
-- **Cold starts on a free host.** The first request after idle can take 50+ seconds. Rather than show a frozen page, the UI shows a wake-up notice, polls health, and offers a retry after a 65-second client timeout.
+- **Making "distance from your comfort zone" concrete.** A slider means nothing unless it maps to real parameters, so each stop is a fixed combination of `bias.trends` and popularity bounds (Out of the bubble: `bias.trends=low` + `filter.popularity.max=0.65`). Result-set overlap is 1 of 10 between the two ends (a bridge card).
+- **Cold starts on a free host.** The first request after idle can take 50+ seconds. The UI shows a wake-up notice, polls health, and offers a retry after 65 seconds.
 - **Real responses differed from my assumptions.** (0) My first resolver took names at face value: *Nausicaa*, *Braiding Sweetgrass* and *Patagonia* all resolved to towns, and *Hades* to a black-metal band. The fix is the type-aware resolver above. Unhinted, *Hadestown* resolves to a book; the example pins the Broadway production (a place entity). (1) `/v2/insights` silently ignored the `limit=8` I first sent and returned its default page of 20; the API pages with `take`, which is what the client sends now; (2) `/search` returns fuzzy hits even for nonsense, so taking the first hit turned made-up names into unrelated entities; (3) Qloo returns exactly two explainability sources per card, with scores that sum to 1. In 90 live cards (3 examples × 3 stops) the third input was never cited: *The Left Hand of Darkness*, *Nausicaa* and *Hadestown* resolve to the right entities but appear on 0 cards. The app shows every source Qloo returns, so this is Qloo's choice, not a display cut; it is why the taste bridge exists; (4) an artist can be a collaboration entity (for example "Ape Escape,Soichi Terada").
 
 ## Accomplishments that I'm proud of
@@ -110,9 +109,6 @@ In the live run above, the three distance settings return nearly disjoint sets o
 ## What's next
 
 - Show explainability strength per source as a small bar on each "because of" chip, not only in the tooltip.
-- Let users list things they already know up front (seed `filter.exclude.entities`) instead of only rejecting cards one at a time.
-- "Open in…" links on each card (streaming / bookstore / map) so a discovery is one click from being tried.
-- A shareable link for a constellation, so friends can see where your taste leads.
 
 ## Built with
 `typescript` `node.js` `express` `qloo` `qloo-insights-api` `esbuild` `vitest` `html5` `css3` `docker` `render` `openai` (optional hook)

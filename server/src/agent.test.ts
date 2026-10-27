@@ -113,6 +113,15 @@ describe("http Qloo client", () => {
   });
 });
 
+describe("description cleanup", () => {
+  it("treats None/null/blank descriptions as absent", async () => {
+    const rows = ["None", " null ", "   ", "", "Real text"].map((description, i) => ({ entity_id: `e${i}`, name: `E${i}`, description }));
+    vi.stubGlobal("fetch", async () => new Response(JSON.stringify({ results: { entities: rows } }), { status: 200 }));
+    const out = await new HttpQlooClient("k").insights({ targetType: "artist", signalEntityIds: ["a"], excludeEntityIds: [], take: 5, biasTrends: "low", explainability: true });
+    expect(out.map((item) => item.description)).toEqual(["", "", "", "", "Real text"]);
+  });
+});
+
 describe("explanation rendering", () => {
   const resolved: ResolvedEntity[] = [
     { id: "one", name: "First Love", type: "book", tags: [] },

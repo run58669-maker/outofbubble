@@ -44,6 +44,12 @@ function stringValue(...values: unknown[]): string | undefined {
   return values.find((value): value is string => typeof value === "string" && value.length > 0);
 }
 
+/** Qloo sometimes sends the literal "None"/"null" as a description; treat it (and blank text) as absent. */
+export function descriptionValue(...values: unknown[]): string {
+  const text = stringValue(...values.filter((value) => typeof value === "string" && !/^\s*(none|null|undefined|n\/a)?\s*$/i.test(value)));
+  return text ?? "";
+}
+
 function numberValue(...values: unknown[]): number | undefined {
   return values.find((value): value is number => typeof value === "number" && Number.isFinite(value));
 }
@@ -214,7 +220,7 @@ export class HttpQlooClient implements QlooClient {
         id,
         name: decodeEntities(name),
         type: stringValue(row.type, properties.type) ?? query.targetType,
-        description: decodeEntities(stringValue(row.description, properties.description, row.summary, properties.short_description) ?? ""),
+        description: decodeEntities(descriptionValue(row.description, properties.description, row.summary, properties.short_description)),
         affinitySourceIds: sources.map((source) => stringValue(source.entity_id, source.id)).filter((item): item is string => Boolean(item)),
         affinitySourceNames: sources.map((source) => stringValue(source.name, source.title)).filter((item): item is string => Boolean(item)),
         affinitySourceScores,

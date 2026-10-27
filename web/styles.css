@@ -183,7 +183,7 @@ h1 { margin: 0 0 14px; font-size: clamp(25px, 2.4vw, 34px); line-height: 1.08; l
 .bridge-meter { position: relative; width: 56px; height: 4px; margin-left: 4px; overflow: hidden; border-radius: 4px; background: var(--border-soft); }
 .bridge-meter i { position: absolute; inset: 0 auto 0 0; border-radius: 4px; background: var(--lilac); }
 .bridge-list li.uncited .bridge-name { text-decoration: underline dotted; text-underline-offset: 3px; }
-.bridge-flag { display: inline-flex; align-items: center; gap: 5px; color: var(--coral-bright); font-size: 11px; }
+.bridge-flag { display: inline-flex; align-items: center; gap: 5px; padding: 1px 8px; border: 1px solid var(--coral); border-radius: 999px; color: var(--coral-bright); font-size: 11px; white-space: nowrap; }
 .bridge-flag::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--coral); box-shadow: 0 0 0 3px rgba(255,120,99,.16); }
 .reason-list span.bridged { color: var(--coral-bright); border-color: var(--coral); border-style: dashed; }
 .card-photo { display: block; height: 100%; max-height: 240px; object-fit: cover; background: var(--surface-raised); }
@@ -359,4 +359,11 @@ h1 { margin: 0 0 14px; font-size: clamp(25px, 2.4vw, 34px); line-height: 1.08; l
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+}
+
+@media (max-width: 480px) {
+  .bridge-bar { gap: 6px 12px; padding: 8px 12px; }
+  .bridge-list { gap: 6px 12px; }
+  .bridge-list li { font-size: 11px; row-gap: 4px; }
+  .bridge-flag { font-size: 10px; padding: 0 6px; }
 }

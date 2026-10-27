@@ -99,7 +99,10 @@ export function buildExplanation(insight: QlooInsight, resolved: ResolvedEntity[
 
 /** One line per parameter actually sent to Qloo /v2/insights (same builder as HttpQlooClient). */
 function formatInsightsQuery(query: InsightQuery): string {
-  return [...buildInsightsParams(query)].map(([key, value]) => `${key}=${value}`).join("\n");
+  return [...buildInsightsParams(query)].map(([key, value]) => {
+    const ids = value.split(",");
+    return ids.length > 3 && key !== "signal.interests.entities" ? `${key}=<${ids.length} ids>` : `${key}=${value}`;
+  }).join("\n");
 }
 
 interface RunQuality { count: number; explained: number }
@@ -432,7 +435,7 @@ export class DiscoveryAgent {
     result.trace.push({
       stage: "refill",
       title: "Refill",
-      detail: `filter.exclude.entities=${excludeIds.join(",")}`,
+      detail: `filter.exclude.entities=<${excludeIds.length} ids>`,
     });
     return result;
   }

@@ -472,8 +472,7 @@ function renderCard(item: Recommendation) {
   }
   const footer = document.createElement("div");
   footer.className = "card-footer";
-  const copy = document.createElement("p");
-  copy.textContent = item.oneLiner ?? item.explanation;
+  const copyText = (item.oneLiner ?? item.explanation ?? "").trim();
   const known = document.createElement("button");
   known.type = "button";
   known.className = "known-button";
@@ -488,7 +487,12 @@ function renderCard(item: Recommendation) {
   search.rel = "noopener noreferrer";
   search.textContent = "Search the web";
   actions.append(search, known);
-  footer.append(copy, actions);
+  if (copyText) {
+    const copy = document.createElement("p");
+    copy.textContent = copyText;
+    footer.append(copy);
+  }
+  footer.append(actions);
   content.append(heading, reasons, footer);
   article.append(art, content);
   return article;
@@ -521,7 +525,7 @@ function renderBridgeBar() {
     if (name === bridgedInput) {
       const flag = document.createElement("span");
       flag.className = "bridge-flag";
-      flag.textContent = " · needed an extra query";
+      flag.textContent = "needed an extra query";
       flag.title = "Cited by no card in the first query, so the agent ran one more query seeded with it alone";
       row.append(flag);
     }

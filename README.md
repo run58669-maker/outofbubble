@@ -132,23 +132,23 @@ The health check is `GET /api/health`.
 
 ## Screenshots
 
-01 and 04 were captured from the live deployment (real Qloo data); 02 and 03 from local mock mode (fictional fixtures, "Sample data" badge) after the taste-bridge change. Dark theme.
+All four were captured from the live deployment (real Qloo data, "Live Qloo" badge) on 2026-10-27 at the default example (Blade Runner 2049 + The Left Hand of Darkness + Disco Elysium → artists, Out of the bubble). Light theme. 04 replays the live response captured for 02, so it cost no extra Qloo call.
 
 ![Empty state with three example prompts](docs/screenshots/01_empty.png)
 
-*Empty state: three clickable example mixes (film + book + game to artists, and two more).*
+*Empty state (1280x800): the example row under the input is always visible, and the same three example mixes are listed below it.*
 
 ![Results with the taste-bridge bar](docs/screenshots/02_results.png)
 
-*Example 02 (Nausicaa + Braiding Sweetgrass + Patagonia → places in Kyoto) in mock mode. The taste-bridge bar shows each input's share of the 10 cards; Braiding Sweetgrass is flagged because no first-query card cited it, so the agent ran one extra query seeded with it alone. The example row under the input is always visible.*
+*Live results at Out of the bubble. The taste-bridge bar shows each input's share of the 10 cards (Blade Runner 6, Left Hand of Darkness 4, Disco Elysium 6); The Left Hand of Darkness is flagged "needed an extra query" because no first-query card cited it, and its 4 cards carry "Bridge from The Left Hand of Darkness" chips. Every card has a Qloo image.*
 
 ![How the agent thought](docs/screenshots/03_trace.png)
 
-*The trace after one refill: the full run (Resolve, Discover, the self-correction retry, Decide, the Taste bridge decision with its exact extra-query parameters, Explain), then the refill appended as its own sub-section, whose Resolve step reads "reused 3 resolved ids (no /search call)".*
+*The trace panel expanded: Resolve, Discover, Decide (kept first query), Taste bridge (0 of 10 cards cited the book, one extra query with its exact parameters, 4 merged, 4 dropped) and Explain.*
 
 ![Mobile results](docs/screenshots/04_mobile.png)
 
-*Same query at 390x844: single-column cards.*
+*Same results at 390x844 @2x: single-column cards, the bridge bar stacked above them.*
 
 ## License
 
