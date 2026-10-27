@@ -1,6 +1,6 @@
 # Devpost submission draft: Out of the Bubble
 
-> Status: final text. All numbers: live site `/api/discover` (real Qloo key), measured 2026-10-27; the table's ‡ note says which commit each cell ran on.
+> Status: final text. All numbers: live site `/api/discover` (real Qloo key), measured 2026-10-27 on commit 962dc52.
 
 ## Project name
 Out of the Bubble
@@ -36,17 +36,17 @@ The agent returns 10 ranked cards. Each card shows the recommendation, its categ
 
 If you already know one, press **"I already know this."** The agent excludes it, along with everything currently on screen, and refills that slot with a new result. Known items stay excluded across re-runs (slider moves, match switches, refills); only Start over or a different set of inputs clears them. The **"How the agent thought"** panel shows each step: Resolve, Discover, Decide, Taste bridge, Explain, and each Refill appended below the run.
 
-**Measured 2026-10-27 on the live site** (one `/api/discover` call per cell, real Qloo key). Default example: *Blade Runner 2049*, *The Left Hand of Darkness*, *Disco Elysium* → artists; examples 02 (Nausicaa, Braiding Sweetgrass, Patagonia → places in Kyoto) and 03 (Hades, Hadestown, Circe → podcasts) at Out of the bubble. Cited = cards on which Qloo's explainability names the input; seeded cards are not counted as cited.
+**Measured 2026-10-27 on commit 962dc52** (live site, one `/api/discover` call per cell, real Qloo key). Default example: *Blade Runner 2049*, *The Left Hand of Darkness*, *Disco Elysium* → artists, at all three stops; examples 02 (Nausicaa, Braiding Sweetgrass, Patagonia → places in Kyoto) and 03 (Hades, Hadestown, Circe → podcasts) at Out of the bubble. Cited = cards on which Qloo's explainability names the input; seeded cards are not counted as cited.
 
 | Cell | Results | Cited (per input, in order) | Taste bridge | Explained | Mean popularity (range) |
 |---|---|---|---|---|---|
-| 01 Next door ‡ | 10 | 9 / 0 / 9 | book: 8 candidates, 1 passed, 1 merged | 9/10 | 0.952 (0.772–0.999) |
-| 01 Across town ‡ | 10 | 9 / 0 / 9 | book: 8 candidates, 1 passed, 1 merged | 9/10 | 0.884 (0.611–0.955) |
+| 01 Next door | 10 | 9 / 0 / 9 | book: 8 candidates, 1 passed, 1 merged | 9/10 | 0.952 (0.772–0.999) |
+| 01 Across town | 10 | 9 / 0 / 9 | book: 8 candidates, 1 passed, 1 merged | 9/10 | 0.884 (0.611–0.955) |
 | 01 Out of the bubble | 10 | 10 / 0 / 10 | book: 8 candidates, 0 passed, 0 merged, kept first query | 10/10 | 0.405 (0.131–0.619) |
-| 02 Out of the bubble ‡ | 10 | 0 / 7 / 7 | film: 8 candidates, 6 passed, 3 merged | 7/10 | 0.344 (0.013–0.550) |
-| 03 Out of the bubble ‡ | 10 | 10 / 0 / 10 | Hadestown: 8 candidates, 0 passed, 0 merged, kept first query | 10/10 | 0.510 (0.100–0.629) |
+| 02 Out of the bubble | 10 | 0 / 7 / 7 | film: 8 candidates, 5 passed, 3 merged | 7/10 | 0.344 (0.013–0.550) |
+| 03 Out of the bubble | 10 | 10 / 0 / 10 | Hadestown: 8 candidates, 0 passed, 0 merged, kept first query | 10/10 | 0.510 (0.100–0.629) |
 
-‡ Measured at 18:07 JST on commit 756fa3b (gate: ≥ 2 tags shared with the other inputs); the live site moved to cad21e7 (stricter gate, text below) at about 18:15 and the cells without ‡ were measured on it. Pass counts on ‡ cells are therefore the looser gate's and are to be re-measured. In every cell Decide logged "kept first query (10 results, 10/10 explained)" before the bridge ran. The same default cell returned 1 passed at 18:06 and 0 passed at 18:17 (different gates and a refreshed Qloo pool), so a bridge outcome is not stable run to run.
+In every cell Decide logged "kept first query (10 results, 10/10 explained)" before the bridge ran. The gate is `seed ≥ 1 and others ≥ 2`; the one merge on the default example is "Tim Shiel" (seed 2 · others 3/322). Earlier the same day, on looser gates, the default cell at Out of the bubble passed 1 candidate once and 0 another time, so a bridge outcome can change between runs and builds.
 
 Each card's popularity badge uses fixed thresholds on Qloo popularity: "well known" from 0.85, "familiar" from 0.6 to 0.85, "deep cut" below 0.6. The far-out cap (0.65) sits below the "well known" floor, so an Out-of-the-bubble card can never be labelled "well known".
 
@@ -68,7 +68,7 @@ Each card's popularity badge uses fixed thresholds on Qloo popularity: "well kno
 - **Self-correction:** if fewer than 6 results came back or under half are explained, the agent retries once with one looser setting, keeps the better run, and logs a `Decision: … because …` line.
 - **Taste bridge (the agent's real decision):** the agent counts how many cards cite each input through explainability. If an input is cited by none, one extra `/v2/insights` call seeded with that input alone (same type and distance, `take=8`, first-page IDs excluded) builds a *candidate pool*, not results. A candidate passes only if it shares ≥ 1 Qloo tag with the seed itself *and* ≥ 2 tags with your *other* inputs' tags (ranked by the latter, then seed tags, then affinity); at most 3 merge, each replacing the lowest-affinity first-page card that is not an input's only citation. If none pass, nothing merges. The trace prints every number: `… 2 passed the relevance gate (seed ≥ 1 and others ≥ 2 of 322: "Alryk": seed 2 · others 9/322 (min 2), …); merged 2, replaced 2`, or `… 0 passed …; kept first query`. A merged card says "Seeded from …" with its shared tags, carries no Qloo score, and the bar counts it as *seeded*, never as *cited*: `The Left Hand of Darkness · 0 cited · 2 seeded`.
 - **Resolved-id reuse:** after the first run the browser sends each input back as `{id, name, type}`, so refills, slider moves and picker switches skip `/search` (the trace says "reused 3 resolved ids"). Fewer Qloo calls, and an input can't drift to a different entity mid-session.
-- **Testing:** Vitest suite running against a deterministic mock Qloo client with hand-written fictional fixtures (no real Qloo data is stored in the repo). 62 tests in 6 files pass (`npm test`); the mock exercises both gate branches (passes / nothing passes).
+- **Testing:** Vitest suite running against a deterministic mock Qloo client with hand-written fictional fixtures (no real Qloo data is stored in the repo). 63 tests in 6 files pass (`npm test`); the mock exercises both gate branches (passes / nothing passes).
 - **Hosting:** Docker on Render (free tier), with a `render.yaml` blueprint. Because the free tier sleeps, the page detects slow cold starts, polls `/api/health`, and offers a retry instead of hanging.
 
 ## Why Qloo is load-bearing

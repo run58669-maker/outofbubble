@@ -119,7 +119,7 @@ Copy `.env.example` into your deployment environment or set variables directly. 
 
 ## Test coverage
 
-Vitest (62 tests in 6 files) covers the type-aware resolver and its 4xx fallback, the decision step, the taste bridge's relevance gate (passes / nothing passes / under-2-tags never merges / max 3 / tag cache on reused ids) and its drop rule, exclusion persistence across re-runs, resolved-id reuse, HTML-entity decoding and picker dedupe, badge thresholds, distance mapping and result-set differences, validation, deduplication, unresolved inputs, honest explanation-source rendering, exclusion, refill, card count, target typing, trace stages, and slow-request UI thresholds. Tests never call Qloo or OpenAI.
+Vitest (63 tests in 6 files) covers the type-aware resolver and its 4xx fallback, the decision step, the taste bridge's relevance gate (passes / nothing passes / under-2-tags never merges / max 3 / tag cache on reused ids) and its drop rule, exclusion persistence across re-runs, resolved-id reuse, HTML-entity decoding and picker dedupe, badge thresholds, distance mapping and result-set differences, validation, deduplication, unresolved inputs, honest explanation-source rendering, exclusion, refill, card count, target typing, trace stages, and slow-request UI thresholds. Tests never call Qloo or OpenAI.
 
 ## Deploy to Render
 
@@ -140,15 +140,15 @@ All four were captured from the live deployment (real Qloo data, "Live Qloo" bad
 
 ![Results with the taste-bridge bar](docs/screenshots/02_results.png)
 
-*Live results at Out of the bubble (1280x800, commit cad21e7, served from the 10-minute cache). Taste-bridge bar: Blade Runner 2049 10 cited, The Left Hand of Darkness 0 cited, Disco Elysium 10 cited, with the chip "extra query: none relevant enough" because no book-seeded candidate passed the relevance gate in this run, so nothing was merged. An earlier run the same day passed one candidate and showed "0 cited · 1 seeded"; the outcome varies between runs. Every card has a Qloo image.*
+*Live results (1280x800, commit 962dc52) at **Next door**, not Out of the bubble: at the far stop the bridge merged nothing in the final run (0 of 8 candidates passed), so this stop shows the merge. Taste-bridge bar: Blade Runner 2049 9 cited, The Left Hand of Darkness "0 cited · 1 seeded" with the chip "extra query: 1 of 8 kept", Disco Elysium 9 cited. The seeded card (Tim Shiel) sits at the bottom of the list, shown in the next screenshot. Whether the bridge merges varies between runs and builds. Every card has a Qloo image.*
 
 ![How the agent thought](docs/screenshots/03_trace.png)
 
-*The trace panel expanded (same run): a Cache step (cache hit), Resolve, Discover, Decide (kept first query, 10/10 explained), Taste bridge (0 of 10 cards cited the book; one extra query with its exact parameters including `filter.exclude.entities=<10 ids>`; the Decision line prints the gate numbers, 0 of 8 candidates passed, best "Alryk" with seed 0 and others 2/322 against a minimum of 7; kept first query) and Explain.*
+*The trace panel expanded (same run), beside the "Seeded from The Left Hand of Darkness" card: Resolve, Discover, Decide (kept first query, 10/10 explained) and Taste bridge. The Decision line prints the gate numbers: 0 of 10 cards cited the book, 8 candidates, 1 passed ("Tim Shiel": seed 2 · others 3/322, min 2), merged 1, replaced 1; below it the extra query's exact parameters including `filter.exclude.entities=<10 ids>`. Explain follows below the frame.*
 
 ![Mobile results](docs/screenshots/04_mobile.png)
 
-*Same results at 390x844 @2x: single-column cards, the bridge bar stacked above them.*
+*Same Next-door run at 390x844 @2x, scrolled to the results: the bridge bar stacks its rows ("0 cited · 1 seeded" and the "extra query: 1 of 8 kept" chip for the book) above single-column cards.*
 
 ## License
 
