@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DiscoveryAgent, PREFERRED_INPUT_TYPES } from "./agent.js";
-import { HttpQlooClient } from "./http-qloo-client.js";
+import { HttpQlooClient, QLOO_SEARCH_TYPE_URNS } from "./http-qloo-client.js";
 import { MockQlooClient } from "./mock-qloo-client.js";
 import { nameScore } from "./name-match.js";
 import type { InsightQuery, QlooClient } from "./types.js";
@@ -76,11 +76,65 @@ describe("type-aware resolver", () => {
       ...baseInput,
       interests: ["Flimzap Nonexistent", "Zzyzx Nonexistent Book", "Qwrtzp Nonexistent"],
     });
-    expect(urls[0]?.searchParams.get("types")).toBe(PREFERRED_INPUT_TYPES.map((type) => `urn:entity:${type}`).join(","));
+    expect(urls[0]?.searchParams.get("types")).toBe(PREFERRED_INPUT_TYPES.map((type) => QLOO_SEARCH_TYPE_URNS[type]).join(","));
     expect(result.resolved).toEqual([]);
     expect(result.recommendations).toEqual([]);
     expect(result.error).toMatch(/None/);
     expect(urls.some((url) => url.pathname === "/v2/insights")).toBe(false);
+  });
+});
+
+describe("Qloo search types filter", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  // Prefix of Qloo's own 400 message (2026-10-27) plus documented spellings; video_game is "videogame" there.
+  const ALLOWED = new Set([
+    "urn:entity:actor", "urn:entity:album", "urn:entity:artist", "urn:entity:author", "urn:entity:book", "urn:entity:brand",
+    "urn:entity:destination", "urn:entity:locality", "urn:entity:movie", "urn:entity:person", "urn:entity:place",
+    "urn:entity:podcast", "urn:entity:tv_show", "urn:entity:videogame",
+  ]);
+
+  it("sends only allowed URNs (videogame, not video_game) and maps them back to internal names", async () => {
+    const urls: URL[] = [];
+    vi.stubGlobal("fetch", async (url: string) => {
+      urls.push(new URL(url));
+      return new Response(JSON.stringify({ results: [{ entity_id: "de", name: "Disco Elysium", types: ["urn:entity:videogame"] }] }), { status: 200 });
+    });
+    const client = new HttpQlooClient("test-key");
+    const [hit] = await client.search("Disco Elysium", [...PREFERRED_INPUT_TYPES, "video_game", "not_a_type"]);
+    const sent = urls[0]!.searchParams.get("types")!.split(",");
+    expect(sent.every((urn) => ALLOWED.has(urn))).toBe(true);
+    expect(sent).toContain("urn:entity:videogame");
+    expect(sent).not.toContain("urn:entity:video_game");
+    expect(hit?.type).toBe("video_game");
+    const [entity] = await new DiscoveryAgent(client, noOneLiners).resolve([{ name: "Disco Elysium", type: "video_game" }]);
+    expect(entity?.id).toBe("de");
+  });
+
+  it("retries without types when the typed search gets a 4xx, and logs it", async () => {
+    const urls: URL[] = [];
+    vi.stubGlobal("fetch", async (url: string) => {
+      const parsed = new URL(url);
+      urls.push(parsed);
+      if (parsed.pathname === "/search" && parsed.searchParams.has("types")) {
+        return new Response(JSON.stringify({ error: { reason: "Bad Request", message: "types/2: must be equal to one of the allowed values" } }), { status: 400 });
+      }
+      if (parsed.pathname === "/search") {
+        const query = parsed.searchParams.get("query")!;
+        return new Response(JSON.stringify({ results: [{ entity_id: query, name: query, types: ["urn:entity:movie"] }] }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ results: { entities: [] } }), { status: 200 });
+    });
+    const result = await new DiscoveryAgent(new HttpQlooClient("test-key"), noOneLiners).discover(baseInput);
+    expect(result.error).toBeUndefined();
+    expect(result.resolved).toHaveLength(3);
+    expect(result.trace[0]?.detail).toContain("typed search rejected with 400; retried without types");
+    expect(urls.filter((url) => url.pathname === "/search" && !url.searchParams.has("types"))).toHaveLength(3);
+  });
+
+  it("still fails loudly on a server error (5xx is not a filter problem)", async () => {
+    vi.stubGlobal("fetch", async () => new Response("down", { status: 503 }));
+    await expect(new DiscoveryAgent(new HttpQlooClient("test-key"), noOneLiners).discover(baseInput)).rejects.toThrow("503");
   });
 });
 

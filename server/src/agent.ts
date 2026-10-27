@@ -162,7 +162,16 @@ export class DiscoveryAgent {
       return { match: { interest: interest.name, entity }, detail: `${interest.name} → ${entity.type} · ${entity.id} (picked by user)` };
     }
     const allowed = (entity: ResolvedEntity) => (hint ? entity.type === hint : !PLACE_INPUT_TYPES.has(entity.type));
-    const typedHits = await this.qloo.search(interest.name, hint ? [hint] : PREFERRED_INPUT_TYPES);
+    let typedHits: ResolvedEntity[] = [];
+    let typedRejected = "";
+    try {
+      typedHits = await this.qloo.search(interest.name, hint ? [hint] : PREFERRED_INPUT_TYPES);
+    } catch (error) {
+      // A rejected `types` filter (any 4xx) must never fail discovery: fall through to the untyped search.
+      const status = (error as { status?: unknown }).status;
+      if (typeof status !== "number" || status < 400 || status >= 500) throw error;
+      typedRejected = ` (typed search rejected with ${status}; retried without types)`;
+    }
     let ranked = rankMatches(interest.name, typedHits.filter(allowed));
     let route = hint ? `typed: ${hint}` : "typed";
     let untypedHits: ResolvedEntity[] = [];
@@ -181,9 +190,9 @@ export class DiscoveryAgent {
         .filter((candidate) => !seen.has(candidate.id) && (seen.add(candidate.id), true))
         .slice(0, MAX_ALTERNATIVES);
     }
-    const detail = entity
+    const detail = (entity
       ? `${interest.name} → ${entity.type} · ${entity.id} (${route})`
-      : `${interest.name} → not found (no close name match)`;
+      : `${interest.name} → not found (no close name match)`) + typedRejected;
     return { match, detail };
   }
 

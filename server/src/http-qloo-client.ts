@@ -2,6 +2,38 @@ import type { InsightQuery, QlooClient, QlooInsight, ResolvedEntity } from "./ty
 
 const QLOO_BASE_URL = "https://hackathon.api.qloo.com";
 
+/**
+ * `/search` `types` values Qloo accepted per its own 400 message (2026-10-27, list was alphabetical and truncated
+ * after "urn:entity:destination"; the rest follows Qloo's documented spellings). Note `videogame`, not `video_game`.
+ */
+export const QLOO_SEARCH_TYPE_URNS: Readonly<Record<string, string>> = {
+  actor: "urn:entity:actor",
+  album: "urn:entity:album",
+  artist: "urn:entity:artist",
+  author: "urn:entity:author",
+  book: "urn:entity:book",
+  brand: "urn:entity:brand",
+  destination: "urn:entity:destination",
+  locality: "urn:entity:locality",
+  movie: "urn:entity:movie",
+  person: "urn:entity:person",
+  place: "urn:entity:place",
+  podcast: "urn:entity:podcast",
+  tv_show: "urn:entity:tv_show",
+  video_game: "urn:entity:videogame",
+};
+
+/** Internal type name for a Qloo URN suffix ("videogame" → "video_game"). */
+const INTERNAL_TYPE: Readonly<Record<string, string>> = { videogame: "video_game" };
+
+/** Carries the HTTP status so callers can tell a rejected filter (4xx) from an outage. */
+export class QlooHttpError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+    this.name = "QlooHttpError";
+  }
+}
+
 type JsonObject = Record<string, unknown>;
 
 function isObject(value: unknown): value is JsonObject {
@@ -35,7 +67,9 @@ export function entityType(row: Record<string, unknown>, properties: Record<stri
     properties.type,
     ...types,
   );
-  return raw ? raw.replace(/^urn:entity:/, "").split(":")[0]! : "entity";
+  if (!raw) return "entity";
+  const type = raw.replace(/^urn:entity:/, "").split(":")[0]!;
+  return INTERNAL_TYPE[type] ?? type;
 }
 
 /** Exactly the query parameters sent to GET /v2/insights; the agent trace prints this same list. */
@@ -76,15 +110,16 @@ export class HttpQlooClient implements QlooClient {
     });
     if (!response.ok) {
       const body = await response.text();
-      throw new Error(`Qloo ${path} failed (${response.status}): ${body.slice(0, 240)}`);
+      throw new QlooHttpError(`Qloo ${path} failed (${response.status}): ${body.slice(0, 600)}`, response.status);
     }
     return response.json();
   }
 
   async search(query: string, types?: readonly string[]): Promise<ResolvedEntity[]> {
     const params = new URLSearchParams({ query });
-    // Qloo /search `types`: comma-separated entity URNs, e.g. "urn:entity:movie,urn:entity:book".
-    if (types?.length) params.set("types", types.map((type) => `urn:entity:${type}`).join(","));
+    // Qloo /search `types`: comma-separated URNs, only values from Qloo's allowed list (unknown names are dropped).
+    const urns = [...new Set((types ?? []).flatMap((type) => QLOO_SEARCH_TYPE_URNS[type] ?? []))];
+    if (urns.length) params.set("types", urns.join(","));
     const payload = await this.get("/search", params);
     const rows = arrayAt(payload, [["results"], ["data"], ["results", "entities"]]);
     return rows.flatMap((row): ResolvedEntity[] => {
