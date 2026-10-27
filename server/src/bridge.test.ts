@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { BRIDGE_TAKE, DiscoveryAgent, bridgeMinShared, pickCardsToDrop, sharedTags } from "./agent.js";
+import { BRIDGE_TAKE, DiscoveryAgent, pickCardsToDrop, sharedTags } from "./agent.js";
 import { HttpQlooClient, decodeEntities } from "./http-qloo-client.js";
 import { MockQlooClient } from "./mock-qloo-client.js";
 import type { InsightQuery, QlooClient, QlooInsight, ResolvedEntity } from "./types.js";
@@ -102,9 +102,7 @@ describe("taste bridge", () => {
     expect(again.bridge?.merged).toBe(3);
   });
 
-  it("rejects candidates that fit the other inputs but not the seed, and scales the bar with the union size", async () => {
-    expect(bridgeMinShared(6)).toBe(2);
-    expect(bridgeMinShared(322)).toBe(7);
+  it("rejects candidates that fit the other inputs but not the seed", async () => {
     // Twin Peaks + Kind of Blue + Aesop: murder-mystery books match Twin Peaks richly but share nothing with the album.
     const tags: Record<string, string[]> = {
       "Twin Peaks": ["murder", "mystery", "small town", "surreal", "detective"],
@@ -128,6 +126,23 @@ describe("taste bridge", () => {
     expect(line).toBe("Decision: Kind of Blue was cited by 0/10 → fetched 2 candidates seeded with it; 0 passed the relevance gate "
       + "(seed ≥ 1 and others ≥ 2 of 8; best: \"Mystery One\": seed 0 · others 4/8 (min 2), \"Jazz Diary\": seed 1 · others 1/8 (min 2)); kept first query");
     expect(result.recommendations.some((item) => item.bridgedFrom)).toBe(false);
+  });
+
+  it("passes seed 2 · others 3 even when the other inputs' tag union is large", async () => {
+    const big = Array.from({ length: 40 }, (_, index) => `t${index}`);
+    const tags: Record<string, string[]> = { Seed: ["alpha", "beta"], Other: [...big, "x", "y", "z"] };
+    const fake: QlooClient = {
+      mode: "mock",
+      search: async (name) => [{ id: `id:${name}`, name, type: "movie", tags: tags[name] ?? [] }],
+      insights: async (query) => query.signalEntityIds.length === 1
+        ? [{ id: "c1", name: "Candidate", type: "artist", description: "", affinitySourceIds: [], affinitySourceNames: [], affinity: 0.5, tags: ["Alpha", "Beta", "X", "Y", "Z"] }]
+        : Array.from({ length: 10 }, (_, index) => ({ id: `r${index}`, name: `R${index}`, type: "artist", description: "",
+          affinitySourceIds: ["id:Other", "id:Third"], affinitySourceNames: [], affinity: index / 10 })),
+    };
+    const result = await new DiscoveryAgent(fake, noOneLiners).discover({ interests: ["Seed", "Other", "Third"], targetType: "artist", distance: 0 });
+    const line = result.trace.find((step) => step.stage === "bridge")?.detail.split("\n")[0] ?? "";
+    expect(line).toContain('"Candidate": seed 2 · others 3/43 (min 2)');
+    expect(result.bridge).toEqual({ input: "Seed", candidates: 1, passed: 1, merged: 1 });
   });
 
   it("drops the lowest-affinity cards but never an input's only citation", () => {
