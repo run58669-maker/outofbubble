@@ -26,12 +26,16 @@ export class MockQlooClient implements QlooClient {
   private readonly entities = readFixture<FixtureEntity[]>("entities.json");
   private readonly catalog = readFixture<FixtureInsight[]>("insights.json");
 
-  async search(query: string): Promise<ResolvedEntity[]> {
+  /** Records every search so tests can assert the typed-then-untyped resolver order. */
+  readonly searchLog: Array<{ query: string; types?: readonly string[] }> = [];
+
+  async search(query: string, types?: readonly string[]): Promise<ResolvedEntity[]> {
+    this.searchLog.push({ query, types });
     const normalized = query.trim().toLowerCase();
     const matches = this.entities.filter(
       (entity) => entity.name.toLowerCase() === normalized || entity.name.toLowerCase().includes(normalized),
     );
-    return matches;
+    return types?.length ? matches.filter((entity) => types.includes(entity.type)) : matches;
   }
 
   async insights(query: InsightQuery): Promise<QlooInsight[]> {
@@ -70,14 +74,19 @@ export class MockQlooClient implements QlooClient {
 
     return ranked.map(({ item }) => {
       const sources = signals.filter((entity) => entity.tags.some((tag) => item.affinityTags.includes(tag)));
-      const chosen = sources.slice(0, 2);
+      // Fictional strength: more shared tags = stronger source. Every source is returned (no cut at two).
+      const affinitySourceScores = Object.fromEntries(sources.map((entity) => [
+        entity.id,
+        Math.round((0.4 + 0.2 * entity.tags.filter((tag) => item.affinityTags.includes(tag)).length + (hash(entity.id + item.id) % 10) / 100) * 100) / 100,
+      ]));
       return {
         id: item.id,
         name: item.name,
         type: item.type,
         description: item.description,
-        affinitySourceIds: chosen.map((entity) => entity.id),
-        affinitySourceNames: chosen.map((entity) => entity.name),
+        affinitySourceIds: sources.map((entity) => entity.id),
+        affinitySourceNames: sources.map((entity) => entity.name),
+        affinitySourceScores,
         score: 0.71 + (hash(item.id) % 20) / 100,
         popularity: item.popularity,
         trend: item.trend,

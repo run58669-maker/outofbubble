@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { DiscoveryAgent, buildExplanation, normalizeInterestNames, validateDiscoverInput } from "./agent.js";
-import { distanceProfile } from "./distance.js";
+import { DiscoveryAgent, PREFERRED_INPUT_TYPES, buildExplanation, normalizeInterestNames, validateDiscoverInput } from "./agent.js";
+import { distanceProfile, obscurityBadge } from "./distance.js";
 import { HttpQlooClient } from "./http-qloo-client.js";
 import { MockQlooClient } from "./mock-qloo-client.js";
-import type { QlooInsight, ResolvedEntity } from "./types.js";
+import { nameScore } from "./name-match.js";
+import type { InsightQuery, QlooClient, QlooInsight, ResolvedEntity } from "./types.js";
 
 const baseInput = {
   interests: ["Blade Runner 2049", "The Left Hand of Darkness", "Disco Elysium"],
@@ -15,15 +16,21 @@ const noOneLiners = async () => new Map<string, string>();
 
 describe("distance mapping", () => {
   it("keeps next-door discovery popular and entity-led", () => {
-    expect(distanceProfile(0)).toMatchObject({ label: "Next door", biasTrends: "high", diversifyBy: "entities", popularityMin: 0.24 });
+    expect(distanceProfile(0)).toEqual({ label: "Next door", biasTrends: "high", popularityMin: 0.24 });
   });
 
-  it("widens across-town discovery with tag diversity", () => {
-    expect(distanceProfile(1)).toMatchObject({ label: "Across town", biasTrends: "low", diversifyBy: "tags", popularityMin: 0.08, popularityMax: 0.96 });
+  it("widens across-town discovery with a popularity band", () => {
+    expect(distanceProfile(1)).toEqual({ label: "Across town", biasTrends: "low", popularityMin: 0.08, popularityMax: 0.96 });
   });
 
-  it("caps popularity at the farthest distance", () => {
-    expect(distanceProfile(2)).toMatchObject({ label: "Out of the bubble", biasTrends: "low", diversifyBy: "tags", popularityMax: 0.8 });
+  it("caps far-out popularity below the well-known badge", () => {
+    expect(distanceProfile(2)).toEqual({ label: "Out of the bubble", biasTrends: "low", popularityMax: 0.65 });
+    expect(obscurityBadge(distanceProfile(2).popularityMax)).not.toBe("well known");
+  });
+
+  it("labels badges at 0.85 and 0.6", () => {
+    expect([0.9, 0.85, 0.84, 0.6, 0.59, undefined].map(obscurityBadge))
+      .toEqual(["well known", "well known", "familiar", "familiar", "deep cut", "reach unknown"]);
   });
 });
 
@@ -57,8 +64,8 @@ describe("mock Qloo client", () => {
 
   it("honors exclusions in insights", async () => {
     const client = new MockQlooClient();
-    const first = await client.insights({ targetType: "artist", signalEntityIds: ["mock:blade-runner-2049"], excludeEntityIds: [], take: 2, biasTrends: "low", diversifyBy: "tags", explainability: true });
-    const second = await client.insights({ targetType: "artist", signalEntityIds: ["mock:blade-runner-2049"], excludeEntityIds: [first[0]!.id], take: 2, biasTrends: "low", diversifyBy: "tags", explainability: true });
+    const first = await client.insights({ targetType: "artist", signalEntityIds: ["mock:blade-runner-2049"], excludeEntityIds: [], take: 2, biasTrends: "low", explainability: true });
+    const second = await client.insights({ targetType: "artist", signalEntityIds: ["mock:blade-runner-2049"], excludeEntityIds: [first[0]!.id], take: 2, biasTrends: "low", explainability: true });
     expect(second.map((item) => item.id)).not.toContain(first[0]!.id);
   });
 });
@@ -99,7 +106,7 @@ describe("http Qloo client", () => {
       urls.push(url);
       return new Response(JSON.stringify({ results: { entities: [] } }), { status: 200 });
     });
-    await new HttpQlooClient("test-key").insights({ targetType: "artist", signalEntityIds: ["a"], excludeEntityIds: [], take: 10, biasTrends: "low", diversifyBy: "tags", explainability: true });
+    await new HttpQlooClient("test-key").insights({ targetType: "artist", signalEntityIds: ["a"], excludeEntityIds: [], take: 10, biasTrends: "low", explainability: true });
     const params = new URL(urls[0]!).searchParams;
     expect(params.get("take")).toBe("10");
     expect(params.has("limit")).toBe(false);
@@ -114,7 +121,17 @@ describe("explanation rendering", () => {
 
   it("renders named explainability sources", () => {
     const insight: QlooInsight = { id: "x", name: "Result", type: "artist", description: "A useful Qloo explanation.", affinitySourceIds: [], affinitySourceNames: ["First Love", "Second Love"] };
-    expect(buildExplanation(insight, resolved)).toEqual({ becauseOf: ["First Love", "Second Love"], text: "A useful Qloo explanation." });
+    expect(buildExplanation(insight, resolved)).toEqual({ becauseOf: ["First Love", "Second Love"], scores: [null, null], text: "A useful Qloo explanation." });
+  });
+
+  it("keeps every source (no cut at two), strongest score first", () => {
+    const three: ResolvedEntity[] = [...resolved, { id: "three", name: "Third Love", type: "video_game", tags: [] }];
+    const insight: QlooInsight = {
+      id: "x", name: "Result", type: "artist", description: "",
+      affinitySourceIds: ["one", "two", "three"], affinitySourceNames: [],
+      affinitySourceScores: { one: 0.2, two: 0.9, three: 0.5 },
+    };
+    expect(buildExplanation(insight, three)).toMatchObject({ becauseOf: ["Second Love", "Third Love", "First Love"], scores: [0.9, 0.5, 0.2] });
   });
 
   it("maps source ids back to input names", () => {
@@ -124,16 +141,18 @@ describe("explanation rendering", () => {
 
   it("does not fabricate because-of evidence when explainability has no sources", () => {
     const insight: QlooInsight = { id: "x", name: "Result", type: "artist", description: "Still explained.", affinitySourceIds: [], affinitySourceNames: [] };
-    expect(buildExplanation(insight, resolved)).toEqual({ becauseOf: [], text: "Still explained." });
+    expect(buildExplanation(insight, resolved)).toEqual({ becauseOf: [], scores: [], text: "Still explained." });
   });
 });
 
 describe("agent loop", () => {
-  it("returns ten cards with honest explainability flags and a three-step trace", async () => {
+  it("returns ten cards with honest explainability flags and a resolve/discover/decide/explain trace", async () => {
     const result = await new DiscoveryAgent(new MockQlooClient(), noOneLiners).discover(baseInput);
     expect(result.recommendations).toHaveLength(10);
     expect(result.recommendations.every((item) => item.explainabilityPresent === (item.becauseOf.length > 0))).toBe(true);
-    expect(result.trace.map((item) => item.stage)).toEqual(["resolve", "discover", "explain"]);
+    expect(result.recommendations.every((item) => item.badge !== "well known")).toBe(true);
+    expect(result.trace.map((item) => item.stage)).toEqual(["resolve", "discover", "decide", "explain"]);
+    expect(result.trace[2]?.detail).toMatch(/^Decision: kept first query \(10 results, \d+\/10 explained\)$/);
     expect(result.trace[0]?.detail).toContain("Blade Runner 2049 → movie · mock:blade-runner-2049");
     expect(result.trace[1]?.detail).toContain("signal.interests.entities=mock:blade-runner-2049,mock:left-hand-darkness,mock:disco-elysium");
     expect(result.trace[1]?.detail).toContain("feature.explainability=true");
@@ -141,7 +160,7 @@ describe("agent loop", () => {
     expect(result.trace[1]?.detail).not.toContain("limit=");
     expect(result.trace[1]?.detail).not.toContain("diversify.by");
     expect(result.trace[1]?.detail).toContain("qloo.returned=10");
-    expect(result.trace[2]?.detail).toContain("result.count=10");
+    expect(result.trace[3]?.detail).toContain("result.count=10");
     expect(result.mode).toBe("mock");
   });
 
@@ -190,7 +209,6 @@ describe("agent loop", () => {
       excludeEntityIds: [],
       take: 12,
       biasTrends: "low",
-      diversifyBy: "tags",
       popularityMin: 0.08,
       popularityMax: 0.96,
       explainability: true,

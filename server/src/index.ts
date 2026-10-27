@@ -4,12 +4,24 @@ import { dirname, resolve } from "node:path";
 import { DiscoveryAgent } from "./agent.js";
 import { HttpQlooClient } from "./http-qloo-client.js";
 import { MockQlooClient } from "./mock-qloo-client.js";
-import type { DiscoverInput, TargetType } from "./types.js";
+import type { DiscoverInput, InterestInput, TargetType } from "./types.js";
+
+/** Interests arrive as plain names or as { name, type?, id? }; anything else is dropped. */
+function interestsFrom(value: unknown): Array<string | InterestInput> {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item): Array<string | InterestInput> => {
+    if (typeof item === "string") return [item];
+    if (typeof item !== "object" || item === null) return [];
+    const { name, type, id } = item as Record<string, unknown>;
+    if (typeof name !== "string") return [];
+    return [{ name, ...(typeof type === "string" ? { type } : {}), ...(typeof id === "string" ? { id } : {}) }];
+  });
+}
 
 function bodyToInput(body: unknown): DiscoverInput {
   const value = typeof body === "object" && body !== null ? body as Record<string, unknown> : {};
   return {
-    interests: Array.isArray(value.interests) ? value.interests.filter((item): item is string => typeof item === "string") : [],
+    interests: interestsFrom(value.interests),
     targetType: value.targetType as TargetType,
     distance: Number(value.distance) as 0 | 1 | 2,
     city: typeof value.city === "string" ? value.city : undefined,
@@ -26,8 +38,9 @@ export function createApp(agent = new DiscoveryAgent(process.env.QLOO_API_KEY ? 
   app.post("/api/resolve", async (request, response, next) => {
     try {
       const value = typeof request.body === "object" && request.body !== null ? request.body as Record<string, unknown> : {};
-      const interests = Array.isArray(value.interests) ? value.interests.filter((item): item is string => typeof item === "string") : [];
-      response.json({ resolved: await agent.resolve(interests) });
+      // `alternatives: true` also returns up to three other close matches per input (the type-chip picker).
+      const { matches } = await agent.resolveMatches(interestsFrom(value.interests), value.alternatives === true);
+      response.json({ resolved: matches.flatMap((match) => (match.entity ? [match.entity] : [])), matches });
     } catch (error) { next(error); }
   });
 

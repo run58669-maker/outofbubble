@@ -53,7 +53,7 @@
           </label>
           <div class="distance-field">
             <div class="distance-heading"><span>Discovery distance</span><strong id="distance-value">Out of the bubble</strong></div>
-            <input id="distance" type="range" min="0" max="2" step="1" value="2" aria-label="Discovery distance" />
+            <input id="distance" type="range" min="0" max="2" step="1" value="2" aria-label="Discovery distance" aria-valuetext="Out of the bubble" />
             <div class="distance-labels" aria-hidden="true"><span>Next door</span><span>Across town</span><span>Out of the bubble</span></div>
           </div>
           <button class="primary-button" id="discover-button" type="button">
@@ -86,6 +86,7 @@
           <div>
             <h2 id="results-title">Beyond your usual orbit</h2>
             <p id="result-summary">Tracing cross-category affinities…</p>
+            <p class="badge-legend" id="badge-legend">Badges use Qloo popularity: <b>well known</b> ≥ 0.85 · <b>familiar</b> 0.6–0.85 · <b>deep cut</b> &lt; 0.6</p>
           </div>
           <div class="mode-note" id="mode-note">Checking data mode…</div>
         </div>

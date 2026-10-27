@@ -2,10 +2,13 @@
   { "id": "mock:blade-runner-2049", "name": "Blade Runner 2049", "type": "movie", "tags": ["speculative", "atmospheric", "identity"] },
   { "id": "mock:left-hand-darkness", "name": "The Left Hand of Darkness", "type": "book", "tags": ["speculative", "anthropology", "winter"] },
   { "id": "mock:disco-elysium", "name": "Disco Elysium", "type": "video_game", "tags": ["political", "surreal", "noir"] },
+  { "id": "mock:decoy-nausicaa-town", "name": "Nausicaa", "type": "locality", "tags": ["coast"] },
   { "id": "mock:nausicaa", "name": "Nausicaa", "type": "movie", "tags": ["ecology", "adventure", "animation"] },
   { "id": "mock:braiding-sweetgrass", "name": "Braiding Sweetgrass", "type": "book", "tags": ["nature", "reciprocity", "science"] },
+  { "id": "mock:decoy-patagonia-region", "name": "Patagonia", "type": "locality", "tags": ["steppe"] },
   { "id": "mock:patagonia", "name": "Patagonia", "type": "brand", "tags": ["outdoors", "repair", "activism"] },
+  { "id": "mock:decoy-hades-band", "name": "Hades", "type": "artist", "tags": ["black metal"] },
   { "id": "mock:hades", "name": "Hades", "type": "video_game", "tags": ["myth", "family", "roguelike"] },
-  { "id": "mock:hadestown", "name": "Hadestown", "type": "artist", "tags": ["folk", "myth", "theatre"] },
+  { "id": "mock:hadestown", "name": "Hadestown", "type": "place", "tags": ["folk", "myth", "theatre"] },
   { "id": "mock:circe", "name": "Circe", "type": "book", "tags": ["myth", "transformation", "solitude"] }
 ]

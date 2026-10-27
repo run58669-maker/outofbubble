@@ -1,7 +1,7 @@
 import type { ResolvedEntity } from "./types.js";
 
 /** Minimum normalized Levenshtein ratio for a fuzzy (non-exact, non-containment) match. */
-export const MIN_NAME_SIMILARITY = 0.6;
+export const MIN_NAME_SIMILARITY = 0.8;
 
 const ARTICLES = new Set(["the", "a", "an"]);
 
@@ -34,31 +34,35 @@ export function levenshteinRatio(left: string, right: string): number {
 }
 
 /**
- * Whole-word containment ("Blade Runner" ⊂ "Blade Runner 2049"). The shorter side must cover at
- * least half of the longer one, so a generic hit such as "Book" cannot match "Zzyzx Nonexistent Book".
+ * One-directional whole-word containment: the *query* must sit inside the hit name
+ * ("Nausicaa" ⊂ "Nausicaä of the Valley of the Wind"). A hit that is only a piece of the query
+ * ("Nonexistent" inside "Flimzap Nonexistent", "Book" inside "Zzyzx Nonexistent Book") does not count.
  */
-function contains(left: string, right: string): boolean {
-  const [shorter, longer] = left.length <= right.length ? [left, right] : [right, left];
-  if (shorter.length < 3 || shorter.length / longer.length < 0.5) return false;
-  return ` ${longer} `.includes(` ${shorter} `);
+function queryContainedInHit(query: string, hit: string): boolean {
+  if (query.length < 3 || query.length >= hit.length) return false;
+  return ` ${hit} `.includes(` ${query} `);
 }
 
-/** 1 = exact (after normalization), 0.9 = containment, otherwise the Levenshtein ratio. */
+/** 1 = exact (after normalization), 0.9 = query contained in the hit name, otherwise the Levenshtein ratio. */
 export function nameScore(query: string, candidate: string): number {
   const left = normalizeName(query);
   const right = normalizeName(candidate);
   if (!left || !right) return 0;
   if (left === right) return 1;
-  if (contains(left, right)) return 0.9;
+  if (queryContainedInHit(left, right)) return 0.9;
   return levenshteinRatio(left, right);
+}
+
+/** Hits ranked by name score (Qloo's order breaks ties), keeping only those close enough to count as a match. */
+export function rankMatches(query: string, hits: ResolvedEntity[], minScore = MIN_NAME_SIMILARITY): ResolvedEntity[] {
+  return hits
+    .map((entity, index) => ({ entity, index, score: nameScore(query, entity.name) }))
+    .filter((entry) => entry.score >= minScore)
+    .sort((a, b) => b.score - a.score || a.index - b.index)
+    .map((entry) => entry.entity);
 }
 
 /** Best-matching hit by name, Qloo's order breaking ties; undefined when nothing is close enough. */
 export function pickBestMatch(query: string, hits: ResolvedEntity[]): ResolvedEntity | undefined {
-  let best: { entity: ResolvedEntity; score: number } | undefined;
-  for (const entity of hits) {
-    const score = nameScore(query, entity.name);
-    if (!best || score > best.score) best = { entity, score };
-  }
-  return best && best.score >= MIN_NAME_SIMILARITY ? best.entity : undefined;
+  return rankMatches(query, hits)[0];
 }

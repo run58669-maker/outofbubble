@@ -48,7 +48,7 @@ export function buildInsightsParams(query: InsightQuery): URLSearchParams {
     take: String(query.take),
   });
   // Real API: book does not support trending requests (400), so bias.trends is skipped for it.
-  if (query.targetType !== "book") params.set("bias.trends", query.biasTrends);
+  if (query.biasTrends && query.targetType !== "book") params.set("bias.trends", query.biasTrends);
   if (query.excludeEntityIds.length) params.set("filter.exclude.entities", query.excludeEntityIds.join(","));
   if (query.city) params.set("filter.location.query", query.city);
   if (query.popularityMin !== undefined) params.set("filter.popularity.min", String(query.popularityMin));
@@ -81,8 +81,11 @@ export class HttpQlooClient implements QlooClient {
     return response.json();
   }
 
-  async search(query: string): Promise<ResolvedEntity[]> {
-    const payload = await this.get("/search", new URLSearchParams({ query }));
+  async search(query: string, types?: readonly string[]): Promise<ResolvedEntity[]> {
+    const params = new URLSearchParams({ query });
+    // Qloo /search `types`: comma-separated entity URNs, e.g. "urn:entity:movie,urn:entity:book".
+    if (types?.length) params.set("types", types.map((type) => `urn:entity:${type}`).join(","));
+    const payload = await this.get("/search", params);
     const rows = arrayAt(payload, [["results"], ["data"], ["results", "entities"]]);
     return rows.flatMap((row): ResolvedEntity[] => {
       if (!isObject(row)) return [];
@@ -117,6 +120,12 @@ export class HttpQlooClient implements QlooClient {
         ...arrayAt(realExplain, [["signal.interests.entities"]]),
       ];
       const sources = sourceRows.filter(isObject);
+      const affinitySourceScores: Record<string, number> = {};
+      for (const source of sources) {
+        const key = stringValue(source.entity_id, source.id, source.name, source.title);
+        const score = numberValue(source.score, source.weight);
+        if (key && score !== undefined) affinitySourceScores[key] = score;
+      }
       return [{
         id,
         name,
@@ -124,6 +133,7 @@ export class HttpQlooClient implements QlooClient {
         description: stringValue(row.description, properties.description, row.summary, properties.short_description) ?? "",
         affinitySourceIds: sources.map((source) => stringValue(source.entity_id, source.id)).filter((item): item is string => Boolean(item)),
         affinitySourceNames: sources.map((source) => stringValue(source.name, source.title)).filter((item): item is string => Boolean(item)),
+        affinitySourceScores,
         score: typeof row.score === "number" ? row.score : undefined,
         popularity: numberValue(row.popularity, properties.popularity, row.popularity_score, properties.popularity_score),
         trend: numberValue(row.trend, properties.trend, row.trend_score, properties.trend_score),

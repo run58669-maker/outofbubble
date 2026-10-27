@@ -9,22 +9,29 @@ import {
 
 type TargetType = "artist" | "book" | "podcast" | "movie" | "tv_show" | "video_game" | "place";
 type Distance = 0 | 1 | 2;
-type Recommendation = { id: string; title: string; type: TargetType; becauseOf: string[]; distance: Distance; explanation: string; oneLiner?: string; artIndex: number; explainabilityPresent: boolean; popularity?: number };
+type Recommendation = { id: string; title: string; type: TargetType; becauseOf: string[]; becauseOfScores?: Array<number | null>; distance: Distance; explanation: string; oneLiner?: string; artIndex: number; explainabilityPresent: boolean; popularity?: number; badge?: string };
 type TraceStep = { stage: string; title: string; detail: string };
-type DiscoveryResponse = { recommendations: Recommendation[]; trace: TraceStep[]; mode: "mock" | "http"; unresolved: string[]; error?: string };
+type Entity = { id: string; name: string; type: string };
+type Match = { interest: string; entity?: Entity; alternatives?: Entity[] };
+type DiscoveryResponse = { recommendations: Recommendation[]; trace: TraceStep[]; mode: "mock" | "http"; unresolved: string[]; matches?: Match[]; error?: string };
+/** One input: `type` is an explicit hint, `id` a match the user picked from the type-chip picker. */
+type Interest = { name: string; type?: string; id?: string };
 
-const examples: Array<{ label: string; interests: string[]; targetType: TargetType; city?: string }> = [
-  { label: "Blade Runner 2049 + The Left Hand of Darkness + Disco Elysium → artists", interests: ["Blade Runner 2049", "The Left Hand of Darkness", "Disco Elysium"], targetType: "artist" },
-  { label: "Nausicaa + Braiding Sweetgrass + Patagonia → places in Kyoto", interests: ["Nausicaa", "Braiding Sweetgrass", "Patagonia"], targetType: "place", city: "Kyoto" },
-  { label: "Hades + Hadestown + Circe → podcasts", interests: ["Hades", "Hadestown", "Circe"], targetType: "podcast" },
+const examples: Array<{ label: string; interests: Interest[]; targetType: TargetType; city?: string }> = [
+  { label: "Blade Runner 2049 + The Left Hand of Darkness + Disco Elysium → artists", interests: [{ name: "Blade Runner 2049", type: "movie" }, { name: "The Left Hand of Darkness", type: "book" }, { name: "Disco Elysium", type: "video_game" }], targetType: "artist" },
+  { label: "Nausicaa (film) + Braiding Sweetgrass (book) + Patagonia (brand) → places in Kyoto", interests: [{ name: "Nausicaa", type: "movie" }, { name: "Braiding Sweetgrass", type: "book" }, { name: "Patagonia", type: "brand" }], targetType: "place", city: "Kyoto" },
+  { label: "Hades (game) + Hadestown (Broadway show) + Circe (book) → podcasts", interests: [{ name: "Hades", type: "video_game" }, { name: "Hadestown", type: "place" }, { name: "Circe", type: "book" }], targetType: "podcast" },
 ];
 
 const distanceLabels = ["Next door", "Across town", "Out of the bubble"];
-let interests = [...examples[0].interests];
+let interests: Interest[] = examples[0].interests.map((item) => ({ ...item }));
 let recommendations: Recommendation[] = [];
 let excludedIds: string[] = [];
 let latestTrace: TraceStep[] = [];
 let unresolvedNames = new Set<string>();
+/** Last resolution per input name (lowercase), from /api/discover or the picker. */
+let matchByName = new Map<string, Match>();
+let openPickerIndex: number | undefined;
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const tokens = $("interest-tokens");
@@ -102,21 +109,50 @@ function showServerAwake(requestId: number) {
   requestStatusCopy.textContent = "Server is awake — finishing your request…";
 }
 
+function typeText(type: string) {
+  return type.replace("_", " ");
+}
+
 function renderInterests() {
+  // Re-rendering replaces the chips: drop any open picker and keep keyboard focus on the same chip.
+  const focusedChip = [...tokens.querySelectorAll(".token-type")].indexOf(document.activeElement as Element);
+  if (pickerPanel) closePicker();
   tokens.replaceChildren();
   interests.forEach((interest, index) => {
+    const key = interest.name.toLocaleLowerCase();
+    const match = matchByName.get(key);
+    const unresolved = unresolvedNames.has(key);
     const token = document.createElement("span");
     token.className = "interest-token";
-    if (unresolvedNames.has(interest.toLocaleLowerCase())) {
+    const label = document.createElement("span");
+    label.className = "token-label";
+    label.textContent = interest.name;
+    if (unresolved) {
       token.classList.add("unresolved");
-      token.title = "Not found";
+      label.title = "Not found";
+    } else if (match?.entity && match.entity.name !== interest.name) {
+      label.title = `Matched: ${match.entity.name}`;
     }
-    token.append(document.createTextNode(interest));
+    token.append(label);
+
+    const shownType = match?.entity?.type ?? interest.type;
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "token-type";
+    chip.textContent = unresolved ? "no match" : shownType ? typeText(shownType) : "auto";
+    chip.setAttribute("aria-haspopup", "true");
+    chip.setAttribute("aria-expanded", String(openPickerIndex === index));
+    chip.setAttribute("aria-label", `${interest.name}: ${unresolved ? "no match" : `matched as ${chip.textContent}`}. Show other matches`);
+    chip.addEventListener("click", () => (openPickerIndex === index ? closePicker(true) : void openPicker(index, token, chip)));
+    token.append(chip);
+
     const remove = document.createElement("button");
     remove.type = "button";
-    remove.setAttribute("aria-label", `Remove ${interest}`);
+    remove.className = "token-remove";
+    remove.setAttribute("aria-label", `Remove ${interest.name}`);
     remove.textContent = "×";
     remove.addEventListener("click", () => {
+      closePicker();
       interests.splice(index, 1);
       unresolvedNames.clear();
       renderInterests();
@@ -125,6 +161,7 @@ function renderInterests() {
     token.append(remove);
     tokens.append(token);
   });
+  if (focusedChip >= 0) chipAt(Math.min(focusedChip, interests.length - 1))?.focus();
   count.textContent = `${interests.length} of 5`;
   interestInput.hidden = interests.length >= 5;
   interestBox.classList.toggle("invalid", interests.length > 0 && interests.length < 3);
@@ -133,20 +170,112 @@ function renderInterests() {
 function addInterest() {
   const value = interestInput.value.trim();
   if (!value || interests.length >= 5) return;
-  if (interests.some((item) => item.toLowerCase() === value.toLowerCase())) {
+  if (interests.some((item) => item.name.toLowerCase() === value.toLowerCase())) {
     showToast("That one is already in your mix.");
     return;
   }
-  interests.push(value);
+  interests.push({ name: value });
   unresolvedNames.clear();
   interestInput.value = "";
   renderInterests();
 }
 
-function markUnresolved(unresolved: string[]) {
-  unresolvedNames = new Set(unresolved.map((name) => name.toLocaleLowerCase()));
+function applyMatches(response: DiscoveryResponse) {
+  unresolvedNames = new Set(response.unresolved.map((name) => name.toLocaleLowerCase()));
+  matchByName = new Map((response.matches ?? []).map((match) => [match.interest.toLocaleLowerCase(), match]));
   renderInterests();
 }
+
+/* ---------- Type-chip picker: top 3 other Qloo matches for one input ---------- */
+
+let pickerPanel: HTMLElement | undefined;
+let pickerChip: HTMLButtonElement | undefined;
+
+function closePicker(returnFocus = false) {
+  const chip = pickerChip;
+  pickerPanel?.remove();
+  pickerPanel = undefined;
+  pickerChip = undefined;
+  openPickerIndex = undefined;
+  chip?.setAttribute("aria-expanded", "false");
+  if (returnFocus) chip?.focus();
+}
+
+function chipAt(index: number) {
+  return tokens.children[index]?.querySelector<HTMLButtonElement>(".token-type") ?? undefined;
+}
+
+function pickMatch(index: number, entity: Entity) {
+  interests[index] = { name: entity.name, type: entity.type, id: entity.id };
+  const key = entity.name.toLocaleLowerCase();
+  matchByName.set(key, { interest: entity.name, entity });
+  unresolvedNames.delete(key);
+  closePicker();
+  renderInterests();
+  chipAt(index)?.focus();
+  showToast(`Now using ${entity.name} (${typeText(entity.type)}).`);
+  if (!results.hidden && recommendations.length) void discover();
+}
+
+async function openPicker(index: number, token: HTMLElement, chip: HTMLButtonElement) {
+  closePicker();
+  const interest = interests[index];
+  if (!interest) return;
+  openPickerIndex = index;
+  pickerChip = chip;
+  chip.setAttribute("aria-expanded", "true");
+  const panel = document.createElement("div");
+  panel.className = "match-picker";
+  panel.setAttribute("role", "group");
+  panel.setAttribute("aria-label", `Other matches for ${interest.name}`);
+  const status = document.createElement("p");
+  status.textContent = "Looking up other matches…";
+  panel.append(status);
+  panel.addEventListener("keydown", (event) => {
+    const options = [...panel.querySelectorAll<HTMLButtonElement>("button")];
+    const at = options.indexOf(document.activeElement as HTMLButtonElement);
+    if (event.key === "Escape") { event.preventDefault(); closePicker(true); }
+    else if (event.key === "ArrowDown" && options.length) { event.preventDefault(); options[(at + 1) % options.length]?.focus(); }
+    else if (event.key === "ArrowUp" && options.length) { event.preventDefault(); options[(at - 1 + options.length) % options.length]?.focus(); }
+  });
+  token.append(panel);
+  pickerPanel = panel;
+  try {
+    const response = await fetch("/api/resolve", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ interests: [{ name: interest.name }], alternatives: true }),
+    });
+    const payload = await response.json() as { matches?: Match[]; error?: string };
+    if (pickerPanel !== panel) return;
+    if (!response.ok) throw new Error(payload.error ?? "lookup failed");
+    const found = payload.matches?.[0];
+    const currentId = matchByName.get(interest.name.toLocaleLowerCase())?.entity?.id ?? interest.id;
+    const seen = new Set(currentId ? [currentId] : []);
+    const options = [found?.entity, ...(found?.alternatives ?? [])]
+      .filter((entity): entity is Entity => Boolean(entity) && !seen.has(entity!.id) && (seen.add(entity!.id), true))
+      .slice(0, 3);
+    status.textContent = options.length ? "Switch this input to:" : "No other close matches in Qloo.";
+    panel.append(...options.map((entity) => {
+      const option = document.createElement("button");
+      option.type = "button";
+      option.append(document.createTextNode(entity.name));
+      const kind = document.createElement("span");
+      kind.textContent = ` · ${typeText(entity.type)}`;
+      option.append(kind);
+      option.addEventListener("click", () => pickMatch(index, entity));
+      return option;
+    }));
+    (panel.querySelector("button") ?? chip).focus();
+  } catch {
+    if (pickerPanel === panel) status.textContent = "Could not load other matches.";
+  }
+}
+
+document.addEventListener("click", (event) => {
+  const clicked = event.target as Node;
+  if (pickerPanel && !pickerPanel.contains(clicked) && !pickerChip?.contains(clicked)) closePicker();
+});
 
 function showEmpty() {
   results.hidden = true;
@@ -249,13 +378,6 @@ function typeLabel(type: TargetType) {
   return type.replace("_", " ").toUpperCase();
 }
 
-function obscurityLabel(popularity?: number) {
-  if (popularity === undefined) return "reach unknown";
-  if (popularity >= 0.7) return "well known";
-  if (popularity >= 0.35) return "under the radar";
-  return "deep cut";
-}
-
 function renderCard(item: Recommendation) {
   const article = document.createElement("article");
   article.className = "recommendation-card";
@@ -281,14 +403,18 @@ function renderCard(item: Recommendation) {
   const obscurityMark = document.createElement("span");
   obscurityMark.className = "obscurity-mark";
   obscurityMark.innerHTML = "<i aria-hidden=\"true\"></i>";
-  obscurityMark.append(document.createTextNode(obscurityLabel(item.popularity)));
+  obscurityMark.append(document.createTextNode(item.badge ?? "reach unknown"));
+  if (item.popularity !== undefined) obscurityMark.title = `Qloo popularity ${item.popularity.toFixed(2)}`;
   heading.append(h3, typeChip, obscurityMark);
 
   const reasons = document.createElement("div");
   reasons.className = "reason-list";
-  item.becauseOf.forEach((reason) => {
+  // Every source Qloo named, strongest first; the score sits in the tooltip to keep the card tidy.
+  item.becauseOf.forEach((reason, index) => {
     const chip = document.createElement("span");
     chip.textContent = `Because of ${reason}`;
+    const score = item.becauseOfScores?.[index];
+    chip.title = typeof score === "number" ? `Qloo explainability score ${score.toFixed(2)}` : "Qloo gave no score for this source";
     reasons.append(chip);
   });
   if (!item.explainabilityPresent || item.becauseOf.length === 0) {
@@ -332,6 +458,7 @@ function renderResults(response: DiscoveryResponse, isDemoRun = false) {
   setModeBadge(response.mode);
   demoPill.hidden = !isDemoRun;
   renderTrace(response.trace, recommendations.length);
+  if (response.error) $("trace-status").textContent = "Not run: no input matched";
   $<HTMLDetailsElement>("trace-panel").open = isDemoRun;
   if (response.error) showRequestError(response.error);
 }
@@ -374,7 +501,7 @@ async function discover(isDemoRun = false) {
   try {
     excludedIds = [];
     const response = await api<DiscoveryResponse>("/api/discover", currentInput(), () => void discover(isDemoRun));
-    markUnresolved(response.unresolved);
+    applyMatches(response);
     renderResults(response, isDemoRun);
   } catch (error) {
     if (error instanceof RequestTimeoutError) {
@@ -405,7 +532,16 @@ async function exclude(item: Recommendation, article: HTMLElement, button: HTMLB
       recommendations.splice(index, 1, response.recommendations[0]);
     }
     else recommendations.splice(index, 1);
-    article.replaceWith(...(response.recommendations[0] ? [renderCard(response.recommendations[0])] : []));
+    const replacement = response.recommendations[0] ? renderCard(response.recommendations[0]) : undefined;
+    article.replaceWith(...(replacement ? [replacement] : []));
+    // Keyboard and screen-reader users land on the new card instead of losing focus with the removed button.
+    if (replacement) {
+      replacement.tabIndex = -1;
+      replacement.setAttribute("aria-label", `New card: ${response.recommendations[0]!.title}`);
+      replacement.focus();
+    } else {
+      grid.querySelector<HTMLButtonElement>(".known-button")?.focus();
+    }
     latestTrace = response.trace;
     renderTrace(response.trace, recommendations.length);
     $("result-summary").textContent = `${recommendations.length} new paths · known discoveries stay out.`;
@@ -428,8 +564,9 @@ function renderExamples() {
     button.innerHTML = `<span>0${index + 1}</span>`;
     button.append(document.createTextNode(example.label));
     button.addEventListener("click", () => {
-      interests = [...example.interests];
+      interests = example.interests.map((item) => ({ ...item }));
       unresolvedNames.clear();
+      matchByName.clear();
       target.value = example.targetType;
       cityInput.value = example.city ?? "";
       updateTarget();
@@ -449,10 +586,17 @@ interestInput.addEventListener("keydown", (event) => {
 });
 interestInput.addEventListener("blur", addInterest);
 target.addEventListener("change", updateTarget);
+let distanceRerunTimer: number | undefined;
 distance.addEventListener("input", () => {
   const value = Number(distance.value) as Distance;
   distanceValue.textContent = distanceLabels[value];
+  distance.setAttribute("aria-valuetext", distanceLabels[value]!);
   distance.style.setProperty("--distance-progress", `${value * 50}%`);
+  // Results already on screen follow the slider (debounced so arrow-key steps send one request).
+  window.clearTimeout(distanceRerunTimer);
+  if (!results.hidden && recommendations.length && !discoverButton.disabled) {
+    distanceRerunTimer = window.setTimeout(() => void discover(), 450);
+  }
 });
 discoverButton.addEventListener("click", () => void discover());
 demoPill.addEventListener("click", () => {
@@ -462,6 +606,7 @@ demoPill.addEventListener("click", () => {
 $("clear-button").addEventListener("click", () => {
   interests = [];
   unresolvedNames.clear();
+  matchByName.clear();
   recommendations = [];
   excludedIds = [];
   renderInterests();
