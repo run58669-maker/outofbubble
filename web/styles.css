@@ -84,6 +84,9 @@ h1 { margin: 0 0 14px; font-size: clamp(25px, 2.4vw, 34px); line-height: 1.08; l
 .count { color: var(--faint); font-size: 12px; white-space: nowrap; }
 .interest-box { min-height: 49px; display: flex; flex-wrap: wrap; align-items: center; gap: 7px; padding: 6px 9px; border: 1px solid #624659; border-radius: 12px; background: rgba(9,7,11,.2); transition: border-color .2s, box-shadow .2s; }
 .interest-box:focus-within { border-color: var(--lilac); box-shadow: 0 0 0 3px rgba(200,154,197,.08); }
+/* Visible keyboard focus for the add-interest field (the input itself has no outline): 2px, fully opaque, both themes. */
+.interest-box:has(#interest-input:focus) { outline: 2px solid var(--coral-bright); outline-offset: 2px; }
+@supports not selector(:has(*)) { #interest-input:focus-visible { outline: 2px solid var(--coral-bright); } }
 .interest-box.invalid { border-color: #87604e; }
 .interest-tokens { display: contents; }
 .interest-token { display: inline-flex; align-items: center; max-width: 100%; gap: 7px; padding: 8px 8px 8px 11px; color: #eee4ed; border: 1px solid #63465e; border-radius: 9px; background: #211725; font-size: 13px; line-height: 1; white-space: nowrap; }
@@ -95,6 +98,7 @@ h1 { margin: 0 0 14px; font-size: clamp(25px, 2.4vw, 34px); line-height: 1.08; l
 .interest-token.unresolved { text-decoration: none; }
 .interest-token .token-type { width: auto; height: auto; padding: 3px 7px 2px; color: #e3c5df; border: 1px solid #75516f; border-radius: 999px; font: 500 9px/1.2 var(--sans); letter-spacing: .08em; text-transform: uppercase; }
 .interest-token .token-type:hover, .interest-token .token-type[aria-expanded="true"] { color: #1a0e11; background: var(--lilac); border-color: var(--lilac); }
+.interest-token .token-match { display: inline-block; max-width: 22ch; overflow: hidden; vertical-align: bottom; text-overflow: ellipsis; white-space: nowrap; text-transform: none; letter-spacing: 0; font-size: 10px; }
 .interest-token.unresolved .token-type { color: var(--coral-bright); border-style: dashed; border-color: #80606e; }
 .match-picker { position: absolute; top: calc(100% + 6px); left: 0; z-index: 4; display: grid; gap: 2px; min-width: 240px; max-width: min(340px, 86vw); padding: 8px; color: var(--muted); border: 1px solid var(--border); border-radius: 11px; background: var(--surface-raised); box-shadow: 0 14px 34px rgba(0,0,0,.35); white-space: normal; }
 .match-picker p { margin: 2px 4px 6px; font-size: 11px; line-height: 1.3; }
@@ -182,6 +186,7 @@ h1 { margin: 0 0 14px; font-size: clamp(25px, 2.4vw, 34px); line-height: 1.08; l
 .bridge-count { font-variant-numeric: tabular-nums; }
 .bridge-meter { position: relative; width: 56px; height: 4px; margin-left: 4px; overflow: hidden; border-radius: 4px; background: var(--border-soft); }
 .bridge-meter i { position: absolute; inset: 0 auto 0 0; border-radius: 4px; background: var(--lilac); }
+.bridge-meter i.seeded { background: repeating-linear-gradient(90deg, var(--coral) 0 3px, transparent 3px 5px); }
 .bridge-list li.uncited .bridge-name { text-decoration: underline dotted; text-underline-offset: 3px; }
 .bridge-flag { display: inline-flex; align-items: center; gap: 5px; padding: 1px 8px; border: 1px solid var(--coral); border-radius: 999px; color: var(--coral-bright); font-size: 11px; white-space: nowrap; }
 .bridge-flag::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--coral); box-shadow: 0 0 0 3px rgba(255,120,99,.16); }
@@ -202,6 +207,7 @@ h1 { margin: 0 0 14px; font-size: clamp(25px, 2.4vw, 34px); line-height: 1.08; l
 .reason-list { display: flex; flex-wrap: wrap; gap: 6px; margin: 15px 0 10px; }
 .reason-list span { max-width: 100%; padding: 6px 10px; overflow: hidden; color: #d8cbd5; border: 1px solid #604459; border-radius: 999px; background: #211725; font: 400 11px/1 var(--sans); text-overflow: ellipsis; white-space: nowrap; }
 .reason-list .no-explanation { margin: 0; color: #887b89; font-size: 11px; font-style: italic; }
+.reason-list .shared-tags { flex-basis: 100%; margin: 0; color: var(--muted); font-size: 11px; }
 .card-footer { display: flex; flex-direction: column; align-items: stretch; gap: 10px; margin-top: auto; }
 .card-footer p { max-width: none; margin: 0; color: #c8bdc5; font: 400 13px/1.4 var(--serif); }
 .card-actions { display: flex; flex: 0 0 auto; align-self: flex-end; align-items: center; gap: 10px; }

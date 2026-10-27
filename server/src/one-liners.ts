@@ -27,6 +27,8 @@ export async function generateOneLiners(
     const response = await fetch("https://api.openai.com/v1/responses", {
       method: "POST",
       headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      // Optional garnish: after 10 s the cards simply ship without one-liners.
+      signal: AbortSignal.timeout(10_000),
       body: JSON.stringify({
         model,
         input: `Write one vivid, factual-sounding discovery hook of at most 16 words for each item. Return only a JSON array of objects with id and line. Do not invent awards or popularity. Items: ${JSON.stringify(input)}`,
@@ -37,7 +39,8 @@ export async function generateOneLiners(
     if (!text) return new Map();
     const parsed = JSON.parse(text.replace(/^```json\s*|\s*```$/g, "")) as Array<{ id?: unknown; line?: unknown }>;
     return new Map(parsed.flatMap((item) => typeof item.id === "string" && typeof item.line === "string" ? [[item.id, item.line]] : []));
-  } catch {
+  } catch (error) {
+    console.error("OpenAI one-liners skipped:", error instanceof Error ? `${error.name}: ${error.message}` : error);
     return new Map();
   }
 }

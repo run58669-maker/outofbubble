@@ -77,7 +77,7 @@ Browser
 
 The Express server serves the API and the compiled vanilla TypeScript single page. `server/src/agent.ts` owns the complete loop and produces an in-memory trace that appears under **How the agent thought**. The Qloo clients share one interface, so tests run entirely against deterministic, hand-written fictional fixtures.
 
-**Taste bridge.** After the first insights call the agent counts how many cards cite each input (Qloo explainability). If an input is cited by none (live, *The Left Hand of Darkness* gets 0 of 10 artist cards while the film and the game get 10 each), it runs one extra `/v2/insights` call seeded with that input alone (same type and distance parameters, `take=4`), merges those cards marked "Bridge from …", and drops the lowest-affinity first-page cards so the page stays at 10. The trace logs the decision either way, and a bar above the grid shows each input's share of the cards.
+**Taste bridge.** After the first insights call the agent counts how many cards cite each input (Qloo explainability). If an input is cited by none (live, *The Left Hand of Darkness* gets 0 of 10 artist cards while the film and the game get 10 each), one extra `/v2/insights` call seeded with that input alone (same type and distance, `take=8`) fetches a *candidate pool*. A candidate merges only if it shares ≥ 2 Qloo tags with the union of the other inputs' tags; at most 3 merge, replacing the lowest-affinity first-page cards that are not an input's only citation; if none pass, nothing merges. Merged cards read "Seeded from …" with their shared tags and no Qloo score. The trace logs the numbers either way, and the bar above the grid counts *cited* (Qloo) and *seeded* (agent) cards separately. "I already know this" exclusions persist across slider moves, match switches and refills until Start over or a change in the set of inputs.
 
 **Resolved-id reuse.** Once inputs have resolved, refills, slider moves and picker switches send `{ id, name, type }` back, so the server skips `/search` and the trace says "reused 3 resolved ids". A refill's trace is appended under the original run instead of replacing it.
 
@@ -119,7 +119,7 @@ Copy `.env.example` into your deployment environment or set variables directly. 
 
 ## Test coverage
 
-Vitest (46 tests in 4 files) covers the type-aware resolver and its 4xx fallback, the decision step, both taste-bridge branches and its drop rule, resolved-id reuse, HTML-entity decoding and picker dedupe, badge thresholds, distance mapping and result-set differences, validation, deduplication, unresolved inputs, honest explanation-source rendering, exclusion, refill, card count, target typing, trace stages, and slow-request UI thresholds. Tests never call Qloo or OpenAI.
+Vitest (59 tests in 6 files) covers the type-aware resolver and its 4xx fallback, the decision step, the taste bridge's relevance gate (passes / nothing passes / under-2-tags never merges / max 3 / tag cache on reused ids) and its drop rule, exclusion persistence across re-runs, resolved-id reuse, HTML-entity decoding and picker dedupe, badge thresholds, distance mapping and result-set differences, validation, deduplication, unresolved inputs, honest explanation-source rendering, exclusion, refill, card count, target typing, trace stages, and slow-request UI thresholds. Tests never call Qloo or OpenAI.
 
 ## Deploy to Render
 
@@ -140,11 +140,11 @@ All four were captured from the live deployment (real Qloo data, "Live Qloo" bad
 
 ![Results with the taste-bridge bar](docs/screenshots/02_results.png)
 
-*Live results at Out of the bubble. The taste-bridge bar shows each input's share of the 10 cards (Blade Runner 6, Left Hand of Darkness 4, Disco Elysium 6); The Left Hand of Darkness is flagged "needed an extra query" because no first-query card cited it, and its 4 cards carry "Bridge from The Left Hand of Darkness" chips. Every card has a Qloo image. The four bridge cards sit at the bottom of the list (see the next screenshot), below this frame.*
+*Live results at Out of the bubble. Screenshot from bridge v1 (before the relevance gate): the bar showed each input's share of the 10 cards (Blade Runner 6, Left Hand of Darkness 4, Disco Elysium 6), with 4 unconditionally merged book-seeded cards. v2 labels such cards "Seeded from …" and counts them apart from Qloo citations. Every card has a Qloo image. The four bridge cards sit at the bottom of the list (see the next screenshot), below this frame.*
 
 ![How the agent thought](docs/screenshots/03_trace.png)
 
-*The trace panel expanded: Resolve, Discover, Decide (kept first query), Taste bridge (0 of 10 cards cited the book, one extra query with its exact parameters including `filter.exclude.entities=<10 ids>`, 4 merged, 4 dropped) and Explain.*
+*The trace panel expanded (bridge v1): Resolve, Discover, Decide (kept first query), Taste bridge (0 of 10 cards cited the book, one extra query with its exact parameters including `filter.exclude.entities=<10 ids>`, 4 merged, 4 dropped) and Explain.*
 
 ![Mobile results](docs/screenshots/04_mobile.png)
 

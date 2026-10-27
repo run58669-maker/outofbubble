@@ -107,6 +107,9 @@ describe("Qloo search types filter", () => {
     expect(sent).toContain("urn:entity:videogame");
     expect(sent).not.toContain("urn:entity:video_game");
     expect(hit?.type).toBe("video_game");
+    // Albums are searched too (Kind of Blue is an album, not the 2016 book of the same name).
+    expect(PREFERRED_INPUT_TYPES).toContain("album");
+    expect(sent).toContain("urn:entity:album");
     const [entity] = await new DiscoveryAgent(client, noOneLiners).resolve([{ name: "Disco Elysium", type: "video_game" }]);
     expect(entity?.id).toBe("de");
   });
@@ -132,9 +135,19 @@ describe("Qloo search types filter", () => {
     expect(urls.filter((url) => url.pathname === "/search" && !url.searchParams.has("types"))).toHaveLength(3);
   });
 
-  it("still fails loudly on a server error (5xx is not a filter problem)", async () => {
-    vi.stubGlobal("fetch", async () => new Response("down", { status: 503 }));
-    await expect(new DiscoveryAgent(new HttpQlooClient("test-key"), noOneLiners).discover(baseInput)).rejects.toThrow("503");
+  it("still fails loudly on a server error (5xx is not a filter problem): 503 with a fixed message", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.stubGlobal("fetch", async () => new Response("down", { status: 502 }));
+    const failure = new DiscoveryAgent(new HttpQlooClient("test-key"), noOneLiners).discover(baseInput);
+    await expect(failure).rejects.toMatchObject({ status: 503, message: "Qloo is rate-limiting us, try again in a minute" });
+  });
+
+  it("maps a Qloo 429 to 503 and a timeout to 504", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.stubGlobal("fetch", async () => new Response("slow down", { status: 429 }));
+    await expect(new HttpQlooClient("k").search("x")).rejects.toMatchObject({ status: 503 });
+    vi.stubGlobal("fetch", async () => { throw new DOMException("The operation timed out.", "TimeoutError"); });
+    await expect(new HttpQlooClient("k").search("x")).rejects.toMatchObject({ status: 504, message: "Qloo took too long to answer, try again in a minute" });
   });
 });
 
@@ -168,7 +181,7 @@ describe("agent decision step", () => {
     const result = await new DiscoveryAgent(fake, noOneLiners).discover({ ...baseInput, interests: ["Alpha", "Beta", "Gamma"] });
     // The third query is the taste bridge (Beta and Gamma are never cited), seeded with Beta alone.
     expect(queries.map((query) => query.biasTrends)).toEqual(["low", undefined, undefined]);
-    expect(queries[2]).toMatchObject({ signalEntityIds: ["id:Beta"], take: 4 });
+    expect(queries[2]).toMatchObject({ signalEntityIds: ["id:Beta"], take: 8 });
     expect(result.trace.find((step) => step.stage === "decide")?.detail)
       .toBe("Decision: dropped bias.trends=low and retried because only 2/10 results were explained (under 50%); kept the retry (10 results, 9/10 explained)");
   });

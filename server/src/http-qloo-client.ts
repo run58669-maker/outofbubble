@@ -1,6 +1,19 @@
+import { QLOO_BUSY_MESSAGE, QLOO_TIMEOUT_MESSAGE, UpstreamError, isAbortError } from "./errors.js";
 import type { InsightQuery, QlooClient, QlooInsight, ResolvedEntity } from "./types.js";
 
 const QLOO_BASE_URL = "https://hackathon.api.qloo.com";
+/** Every outbound Qloo call gives up after this long (mapped to a 504 for the client). */
+export const QLOO_TIMEOUT_MS = 10_000;
+
+/** Card images are only taken from Qloo's own hosts (qloo.com or a subdomain such as images.qloo.com). */
+export function isQlooImageHost(url: string): boolean {
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    return host === "qloo.com" || host.endsWith(".qloo.com");
+  } catch {
+    return false;
+  }
+}
 
 /**
  * `/search` `types` values Qloo accepted per its own 400 message (2026-10-27, list was alphabetical and truncated
@@ -79,7 +92,7 @@ export function imageUrlOf(row: JsonObject, properties: JsonObject): string | un
   for (const candidate of candidates) {
     const first = Array.isArray(candidate) ? candidate[0] : candidate;
     const url = typeof first === "string" ? first : isObject(first) ? stringValue(first.url, first.src) : undefined;
-    if (url && /^https?:\/\//i.test(url)) return url.replace(/^http:/i, "https:");
+    if (url && /^https?:\/\//i.test(url) && isQlooImageHost(url)) return url.replace(/^http:/i, "https:");
   }
   return undefined;
 }
@@ -157,11 +170,22 @@ export class HttpQlooClient implements QlooClient {
   }
 
   private async get(path: string, params: URLSearchParams): Promise<unknown> {
-    const response = await fetch(`${QLOO_BASE_URL}${path}?${params.toString()}`, {
-      headers: { "X-Api-Key": this.apiKey, Accept: "application/json" },
-    });
+    let response: Response;
+    try {
+      response = await fetch(`${QLOO_BASE_URL}${path}?${params.toString()}`, {
+        headers: { "X-Api-Key": this.apiKey, Accept: "application/json" },
+        signal: AbortSignal.timeout(QLOO_TIMEOUT_MS),
+      });
+    } catch (error) {
+      console.error(`Qloo ${path} request failed:`, error instanceof Error ? `${error.name}: ${error.message}` : error);
+      if (isAbortError(error)) throw new UpstreamError(QLOO_TIMEOUT_MESSAGE, 504);
+      throw new UpstreamError(QLOO_BUSY_MESSAGE, 503);
+    }
     if (!response.ok) {
-      const body = await response.text();
+      const body = await response.text().catch(() => "");
+      // The 600-char excerpt is for the server log; clients only ever see a fixed message (see index.ts).
+      console.error(`Qloo ${path} failed (${response.status}): ${body.slice(0, 600)}`);
+      if (response.status === 429 || response.status >= 500) throw new UpstreamError(QLOO_BUSY_MESSAGE, 503);
       throw new QlooHttpError(`Qloo ${path} failed (${response.status}): ${body.slice(0, 600)}`, response.status);
     }
     return response.json();
@@ -229,6 +253,7 @@ export class HttpQlooClient implements QlooClient {
         popularity: numberValue(row.popularity, properties.popularity, row.popularity_score, properties.popularity_score),
         trend: numberValue(row.trend, properties.trend, row.trend_score, properties.trend_score),
         ...(imageUrl ? { imageUrl } : {}),
+        tags: extractTags(row.tags ?? properties.tags),
       }];
     });
   }

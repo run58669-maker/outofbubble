@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { DiscoveryAgent, pickCardsToDrop } from "./agent.js";
+import { BRIDGE_TAKE, DiscoveryAgent, pickCardsToDrop, sharedTags } from "./agent.js";
 import { HttpQlooClient, decodeEntities } from "./http-qloo-client.js";
 import { MockQlooClient } from "./mock-qloo-client.js";
 import type { InsightQuery, QlooClient, QlooInsight, ResolvedEntity } from "./types.js";
@@ -27,27 +27,89 @@ describe("taste bridge", () => {
     expect(result.recommendations.some((item) => item.bridgedFrom)).toBe(false);
   });
 
-  it("runs one extra query for an uncited input and merges its cards (example 02)", async () => {
+  it("merges only candidates that pass the relevance gate (example 02, passes)", async () => {
     const result = await new DiscoveryAgent(new MockQlooClient(), noOneLiners).discover(example02);
     const bridge = result.trace.find((step) => step.stage === "bridge")?.detail ?? "";
-    expect(bridge).toMatch(/^Decision: Braiding Sweetgrass was cited by 0 of 10 cards → ran one extra query seeded with it alone; merged 2 cards/);
+    expect(bridge.split("\n")[0]).toBe("Decision: Braiding Sweetgrass was cited by 0/10 → fetched 2 candidates seeded with it; "
+      + "1 passed the relevance gate (shared tags ≥ 2 with your other interests: \"Moss Courtyard\" 3); merged 1, replaced 1");
     expect(bridge).toContain("signal.interests.entities=mock:braiding-sweetgrass\n");
-    expect(bridge).toContain("take=4");
-    expect(result.bridgedInput).toBe("Braiding Sweetgrass");
+    expect(bridge).toContain(`take=${BRIDGE_TAKE}`);
+    expect(BRIDGE_TAKE).toBe(8);
+    expect(result.bridge).toEqual({ input: "Braiding Sweetgrass", candidates: 2, passed: 1, merged: 1 });
     const ids = result.recommendations.map((item) => item.id);
     expect(ids).toHaveLength(10);
     expect(new Set(ids).size).toBe(10);
     const bridged = result.recommendations.filter((item) => item.bridgedFrom);
-    expect(bridged).toHaveLength(2);
-    expect(bridged.every((item) => item.bridgedFrom === "Braiding Sweetgrass" && item.becauseOf.includes("Braiding Sweetgrass"))).toBe(true);
+    expect(bridged.map((item) => item.title)).toEqual(["Moss Courtyard"]);
+    // Seeded, not cited: the only "because of" is the seed, with no Qloo score, and it does not count as explained.
+    expect(bridged[0]).toMatchObject({
+      bridgedFrom: "Braiding Sweetgrass", becauseOf: ["Braiding Sweetgrass"], becauseOfScores: [null],
+      explainabilityPresent: false, sharedTags: ["ecology", "adventure", "outdoors"],
+    });
   });
 
-  it("drops the lowest-affinity cards but spares an input's only citation", () => {
+  it("never merges a candidate with fewer than 2 shared tags", async () => {
+    const result = await new DiscoveryAgent(new MockQlooClient(), noOneLiners).discover(example02);
+    // "Reciprocity Lab Café" came back in the same candidate pool but shares only "activism" with Nausicaa + Patagonia.
+    expect(result.recommendations.some((item) => item.id === "mock:place:reciprocity-lab")).toBe(false);
+    expect(sharedTags(["science", "activism"], new Set(["ecology", "adventure", "animation", "outdoors", "repair", "activism"])))
+      .toEqual(["activism"]);
+  });
+
+  it("merges nothing when no candidate passes the gate (example 02, distance 1)", async () => {
+    const result = await new DiscoveryAgent(new MockQlooClient(), noOneLiners).discover({ ...example02, distance: 1 });
+    const bridge = result.trace.find((step) => step.stage === "bridge")?.detail ?? "";
+    expect(bridge.split("\n")[0]).toMatch(
+      /^Decision: Patagonia was cited by 0\/10 → fetched 5 candidates seeded with it; 0 passed the relevance gate \(shared tags ≥ 2 with your other interests; best: .*\); kept first query$/,
+    );
+    expect(result.bridge).toEqual({ input: "Patagonia", candidates: 5, passed: 0, merged: 0 });
+    expect(result.recommendations.some((item) => item.bridgedFrom)).toBe(false);
+    expect(result.recommendations).toHaveLength(10);
+  });
+
+  it("merges at most 3, keeps tags for reused ids, and ignores non-taste tags", async () => {
+    const search = async (name: string): Promise<ResolvedEntity[]> =>
+      [{ id: `id:${name}`, name, type: "movie", tags: name === "Lonely" ? ["solo"] : ["noir", "rain", "jazz", "18-24", "Audiobook"] }];
+    let searches = 0;
+    const fake: QlooClient = {
+      mode: "mock",
+      search: async (name) => { searches += 1; return search(name); },
+      insights: async (query) => {
+        if (query.signalEntityIds.length === 1) {
+          return ["p1", "p2", "p3", "p4"].map((id, index) => ({
+            id, name: id.toUpperCase(), type: "artist", description: "", affinitySourceIds: [query.signalEntityIds[0]!],
+            affinitySourceNames: [], affinity: 0.9 - index / 10, tags: ["Noir", "Rain"],
+          })).concat([{ id: "junk", name: "JUNK", type: "artist", description: "", affinitySourceIds: [], affinitySourceNames: [],
+            affinity: 0.99, tags: ["18-24", "audiobook", "noir"] }]);
+        }
+        return Array.from({ length: 10 }, (_, index) => ({
+          id: `r${index}`, name: `R${index}`, type: "artist", description: "", affinitySourceIds: ["id:Alpha", "id:Beta"],
+          affinitySourceNames: [], affinity: index / 10,
+        }));
+      },
+    };
+    const agent = new DiscoveryAgent(fake, noOneLiners);
+    const input = { interests: ["Alpha", "Beta", "Lonely"], targetType: "artist" as const, distance: 2 as const };
+    const first = await agent.discover(input);
+    expect(first.bridge).toEqual({ input: "Lonely", candidates: 5, passed: 4, merged: 3 });
+    expect(first.recommendations.filter((item) => item.bridgedFrom).map((item) => item.id)).toEqual(["p1", "p2", "p3"]);
+    // The three weakest first-query cards were replaced; JUNK only shares non-taste tags plus one real one.
+    expect(first.recommendations.map((item) => item.id).slice(0, 7)).toEqual(["r3", "r4", "r5", "r6", "r7", "r8", "r9"]);
+    // A re-run with reused ids (slider move) does no /search and still has the other inputs' tags from the cache.
+    searches = 0;
+    const again = await agent.discover({ ...input, interests: first.resolved.map(({ id, name, type }) => ({ id, name, type })) });
+    expect(searches).toBe(0);
+    expect(again.bridge?.merged).toBe(3);
+  });
+
+  it("drops the lowest-affinity cards but never an input's only citation", () => {
     const resolved: ResolvedEntity[] = [{ id: "a", name: "A", type: "movie", tags: [] }, { id: "b", name: "B", type: "book", tags: [] }];
     const card = (id: string, score: number, sources: string[]): QlooInsight =>
       ({ id, name: id, type: "artist", description: "", affinitySourceIds: sources, affinitySourceNames: [], score });
     const cards = [card("strong", 0.9, ["a"]), card("onlyB", 0.1, ["b"]), card("weakA", 0.2, ["a"]), card("midA", 0.5, ["a"])];
     expect([...pickCardsToDrop(cards, resolved, 2)]).toEqual(["weakA", "midA"]);
+    // Asked for 4, only 2 are safe: "strong" is then A's last citation and "onlyB" is B's.
+    expect([...pickCardsToDrop(cards, resolved, 4)]).toEqual(["weakA", "midA"]);
   });
 
   it("does not run the bridge on a one-card refill", async () => {
@@ -101,7 +163,10 @@ describe("resolved-id reuse and name hygiene", () => {
         return new Response(JSON.stringify({ results }), { status: 200 });
       }
       return new Response(JSON.stringify({ results: { entities: [
-        { entity_id: "x", name: "Pic &amp; Co", properties: { image: { url: "http://img.example/x.jpg" } }, query: { affinity: 0.7 } },
+        { entity_id: "x", name: "Pic &amp; Co", properties: { image: { url: "http://images.qloo.com/x.jpg" } }, query: { affinity: 0.7 },
+          tags: [{ id: "urn:tag:genre:music:ambient", name: "Ambient" }, { id: "urn:tag:keyword:qloo:noir", name: "Noir" }] },
+        { entity_id: "y", name: "Elsewhere", properties: { image: { url: "https://evil.example/qloo.com/y.jpg" } } },
+        { entity_id: "z", name: "Lookalike", properties: { image: { url: "https://images.qloo.com.evil.example/z.jpg" } } },
       ] } }), { status: 200 });
     });
     const client = new HttpQlooClient("test-key");
@@ -111,7 +176,10 @@ describe("resolved-id reuse and name hygiene", () => {
       ["b3", "Left Hand & Right", "book"],
       ["m1", "Left Hand", "movie"],
     ]);
-    const [insight] = await client.insights({ targetType: "artist", signalEntityIds: ["b1"], excludeEntityIds: [], take: 1, explainability: true });
-    expect(insight).toMatchObject({ name: "Pic & Co", imageUrl: "https://img.example/x.jpg", affinity: 0.7 });
+    const [insight, other, lookalike] = await client.insights({ targetType: "artist", signalEntityIds: ["b1"], excludeEntityIds: [], take: 3, explainability: true });
+    expect(insight).toMatchObject({ name: "Pic & Co", imageUrl: "https://images.qloo.com/x.jpg", affinity: 0.7, tags: ["Ambient", "Noir"] });
+    // Only Qloo-hosted images survive.
+    expect(other?.imageUrl).toBeUndefined();
+    expect(lookalike?.imageUrl).toBeUndefined();
   });
 });

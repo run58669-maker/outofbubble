@@ -9,6 +9,8 @@ interface FixtureInsight {
   type: string;
   description: string;
   affinityTags: string[];
+  /** Descriptive tags returned with the result (Qloo `tags`); defaults to affinityTags. */
+  tags?: string[];
   popularity: number;
   trend: number;
 }
@@ -90,6 +92,7 @@ export class MockQlooClient implements QlooClient {
         score: 0.71 + (hash(item.id) % 20) / 100,
         popularity: item.popularity,
         trend: item.trend,
+        tags: item.tags ?? item.affinityTags,
       };
     });
   }

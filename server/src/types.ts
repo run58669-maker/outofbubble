@@ -13,7 +13,7 @@ export type Distance = 0 | 1 | 2;
 
 /** Entity types an input may resolve to (Qloo search `types` values, without the `urn:entity:` prefix). */
 export const ENTITY_TYPES = [
-  "artist", "book", "brand", "destination", "locality", "movie", "person", "place", "podcast", "tv_show", "video_game",
+  "album", "artist", "book", "brand", "destination", "locality", "movie", "person", "place", "podcast", "tv_show", "video_game",
 ] as const;
 
 export interface ResolvedEntity {
@@ -68,6 +68,8 @@ export interface QlooInsight {
   trend?: number;
   /** Entity image from the Qloo payload (`properties.image.url`), when present. */
   imageUrl?: string;
+  /** Tag names Qloo attaches to the result entity (`tags[].name`); the taste bridge's relevance gate reads them. */
+  tags?: string[];
 }
 
 export interface QlooClient {
@@ -78,7 +80,7 @@ export interface QlooClient {
 }
 
 export interface TraceStep {
-  stage: "resolve" | "discover" | "decide" | "bridge" | "explain" | "refill";
+  stage: "cache" | "resolve" | "discover" | "decide" | "bridge" | "explain" | "refill";
   title: string;
   detail: string;
 }
@@ -99,8 +101,13 @@ export interface Recommendation {
   popularity?: number;
   /** Popularity badge (see BADGE_THRESHOLDS in distance.ts). */
   badge: "well known" | "familiar" | "deep cut" | "reach unknown";
-  /** Set on cards from the taste-bridge query: the input that query was seeded with alone. */
+  /**
+   * Set on cards from the taste-bridge query: the input that query was seeded with alone. The matching `becauseOf`
+   * entry is *seeded* by the agent (score null), not a Qloo citation in the combined query.
+   */
   bridgedFrom?: string;
+  /** Bridge cards only: the candidate's tags it shares with the user's other inputs (why it passed the gate). */
+  sharedTags?: string[];
   /** Qloo entity image, when the payload had one. */
   imageUrl?: string;
 }
@@ -124,5 +131,7 @@ export interface DiscoveryResult {
   mode: "mock" | "http";
   /** The input the taste bridge ran an extra query for (cited by 0 cards in the first query). */
   bridgedInput?: string;
+  /** Taste-bridge numbers when its extra query ran: candidates fetched, passed the relevance gate, merged. */
+  bridge?: { input: string; candidates: number; passed: number; merged: number };
   error?: string;
 }

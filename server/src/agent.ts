@@ -1,6 +1,7 @@
 import { distanceProfile, obscurityBadge } from "./distance.js";
 import { buildInsightsParams } from "./http-qloo-client.js";
 import { normalizeName, rankMatches } from "./name-match.js";
+import { InputError } from "./errors.js";
 import { generateOneLiners } from "./one-liners.js";
 import {
   ENTITY_TYPES,
@@ -20,7 +21,7 @@ import {
 export const DEFAULT_CARD_COUNT = 10;
 
 /** Without an explicit hint, inputs are searched as these types first (Qloo /search `types`). */
-export const PREFERRED_INPUT_TYPES = ["movie", "book", "video_game", "tv_show", "artist", "podcast", "brand"] as const;
+export const PREFERRED_INPUT_TYPES = ["movie", "book", "video_game", "tv_show", "album", "artist", "podcast", "brand"] as const;
 /** Place-like entities never win an unhinted input: "Patagonia" the brand, not the region. */
 export const PLACE_INPUT_TYPES: ReadonlySet<string> = new Set(["locality", "place", "destination"]);
 export const MAX_ALTERNATIVES = 3;
@@ -32,8 +33,37 @@ export const MIN_GOOD_RESULTS = 6;
 export const MIN_EXPLAINED_SHARE = 0.5;
 const POPULARITY_NOTCH = 0.15;
 const POPULARITY_CEILING = 0.96;
-/** Page size of the one extra taste-bridge query seeded with an uncited input alone. */
-export const BRIDGE_TAKE = 4;
+/** Page size of the one extra taste-bridge query seeded with an uncited input alone: a candidate pool, not results. */
+export const BRIDGE_TAKE = 8;
+/** A bridge candidate must share at least this many Qloo tags with the union of the user's OTHER inputs. */
+export const BRIDGE_MIN_SHARED_TAGS = 2;
+/** At most this many bridge candidates replace first-query cards. */
+export const BRIDGE_MAX_MERGE = 3;
+/** Tags that say nothing about taste (formats, platforms, audience age brackets) never count as shared. */
+const NON_TASTE_TAGS = new Set([
+  "audiobook", "hardcover", "paperback", "print", "digital", "ebook", "kindle", "novels", "fiction", "nonfiction", "non fiction",
+  "single player", "singleplayer", "multiplayer", "microsoft windows", "windows", "macos", "linux", "playstation 4", "playstation 5",
+  "xbox one", "xbox series x s", "nintendo switch", "first person", "third person", "multiple persons", "english", "music", "podcast",
+]);
+const MAX_CACHED_TAG_SETS = 2000;
+
+/** Lowercase, accent- and punctuation-free tag key; undefined for tags that carry no taste signal. */
+export function tagKey(tag: string): string | undefined {
+  const key = tag.normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+  if (!key || /^\d/.test(key) || NON_TASTE_TAGS.has(key)) return undefined;
+  return key;
+}
+
+/** The candidate's tags (its own spelling, deduped by key) that also appear among `otherTags` keys. */
+export function sharedTags(candidateTags: readonly string[] | undefined, otherTags: ReadonlySet<string>): string[] {
+  const seen = new Set<string>();
+  return (candidateTags ?? []).filter((tag) => {
+    const key = tagKey(tag);
+    if (!key || seen.has(key) || !otherTags.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
 
 function toInterest(value: string | InterestInput): InterestInput | undefined {
   if (typeof value === "string") return { name: value.trim() };
@@ -67,10 +97,10 @@ export function normalizeInterestNames(interests: Array<string | InterestInput>)
 
 export function validateDiscoverInput(input: DiscoverInput): Omit<DiscoverInput, "interests"> & { interests: InterestInput[] } {
   const interests = normalizeInterests(input.interests ?? []);
-  if (interests.length < 3 || interests.length > 5) throw new Error("Choose 3 to 5 interests.");
-  if (!TARGET_TYPES.includes(input.targetType)) throw new Error("Choose a supported target category.");
-  if (![0, 1, 2].includes(input.distance)) throw new Error("Distance must be 0, 1, or 2.");
-  if (input.targetType === "place" && !input.city?.trim()) throw new Error("Add a city for place discovery.");
+  if (interests.length < 3 || interests.length > 5) throw new InputError("Choose 3 to 5 interests.");
+  if (!TARGET_TYPES.includes(input.targetType)) throw new InputError("Choose a supported target category.");
+  if (![0, 1, 2].includes(input.distance)) throw new InputError("Distance must be 0, 1, or 2.");
+  if (input.targetType === "place" && !input.city?.trim()) throw new InputError("Add a city for place discovery.");
   return { ...input, interests, city: input.city?.trim(), excludeIds: input.excludeIds ?? [] };
 }
 
@@ -157,8 +187,8 @@ function affinityOf(insight: QlooInsight): number | undefined {
 }
 
 /**
- * Picks `dropCount` cards from the first batch to make room for bridge cards: lowest affinity first, and a card that
- * is the only citation of some input is spared while any other candidate is left.
+ * Picks up to `dropCount` cards from the first batch to make room for bridge cards: lowest affinity first, and a card
+ * that is the only remaining citation of some input is never dropped (so fewer than `dropCount` may come back).
  */
 export function pickCardsToDrop(insights: QlooInsight[], resolved: ResolvedEntity[], dropCount: number): Set<string> {
   const order = insights
@@ -176,18 +206,49 @@ export function pickCardsToDrop(insights: QlooInsight[], resolved: ResolvedEntit
     if (dropped.size >= dropCount) break;
     if ((sources.get(insight.id) ?? []).every((name) => (counts.get(name) ?? 0) > 1)) drop(insight.id);
   }
-  for (const { insight } of order) {
-    if (dropped.size >= dropCount) break;
-    if (!dropped.has(insight.id)) drop(insight.id);
-  }
   return dropped;
 }
 
+interface BridgeOutcome {
+  insights: QlooInsight[];
+  detail: string;
+  /** Present when the candidate query ran and returned (merged may be 0). */
+  ran?: { input: string; candidates: number; passed: number; merged: number };
+  bridgedIds: Set<string>;
+  sharedById: Map<string, string[]>;
+}
+
 export class DiscoveryAgent {
+  /** Qloo tags per entity id from earlier /search calls, so re-runs with reused ids still have tags for the bridge. */
+  private readonly tagCache = new Map<string, string[]>();
+
   constructor(
     private readonly qloo: QlooClient,
     private readonly oneLiners: typeof generateOneLiners = generateOneLiners,
   ) {}
+
+  private rememberTags(entities: ResolvedEntity[]) {
+    for (const entity of entities) {
+      if (!entity.tags.length) continue;
+      this.tagCache.delete(entity.id);
+      this.tagCache.set(entity.id, entity.tags);
+      if (this.tagCache.size > MAX_CACHED_TAG_SETS) this.tagCache.delete(this.tagCache.keys().next().value!);
+    }
+  }
+
+  /** Tags for a resolved input: its own, else cached, else one typed /search by name (only when the bridge needs it). */
+  private async tagsOf(entity: ResolvedEntity): Promise<string[]> {
+    if (entity.tags.length) return entity.tags;
+    const cached = this.tagCache.get(entity.id);
+    if (cached) return cached;
+    try {
+      const hits = await this.qloo.search(entity.name, entity.type !== "entity" ? [entity.type] : undefined);
+      this.rememberTags(hits);
+      return hits.find((hit) => hit.id === entity.id)?.tags ?? [];
+    } catch {
+      return [];
+    }
+  }
 
   get mode(): QlooClient["mode"] {
     return this.qloo.mode;
@@ -201,7 +262,7 @@ export class DiscoveryAgent {
   private async resolveOne(interest: InterestInput, withAlternatives: boolean): Promise<{ match: InterestMatch; detail: string }> {
     const hint = interest.type;
     if (interest.id) {
-      const entity: ResolvedEntity = { id: interest.id, name: interest.name, type: hint ?? "entity", tags: [] };
+      const entity: ResolvedEntity = { id: interest.id, name: interest.name, type: hint ?? "entity", tags: this.tagCache.get(interest.id) ?? [] };
       return { match: { interest: interest.name, entity }, detail: `${interest.name} → ${entity.type} · ${entity.id} (reused id, no search)` };
     }
     const allowed = (entity: ResolvedEntity) => (hint ? entity.type === hint : !PLACE_INPUT_TYPES.has(entity.type));
@@ -213,7 +274,9 @@ export class DiscoveryAgent {
       // A rejected `types` filter (any 4xx) must never fail discovery: fall through to the untyped search.
       const status = (error as { status?: unknown }).status;
       if (typeof status !== "number" || status < 400 || status >= 500) throw error;
-      typedRejected = ` (typed search rejected with ${status}; retried without types)`;
+      // Keep a short excerpt of Qloo's own 400 text in the trace: it lists the allowed `types` values.
+      const said = error instanceof Error ? error.message.replace(/^Qloo \/search failed \(\d+\): /, "").slice(0, 120) : "";
+      typedRejected = ` (typed search rejected with ${status}; retried without types)${said ? ` · Qloo said: ${said}` : ""}`;
     }
     let ranked = rankMatches(interest.name, typedHits.filter(allowed));
     let route = hint ? `typed: ${hint}` : "typed";
@@ -225,6 +288,7 @@ export class DiscoveryAgent {
         route = "untyped fallback";
       }
     }
+    this.rememberTags([...typedHits, ...untypedHits]);
     const entity = ranked[0];
     const match: InterestMatch = { interest: interest.name, entity };
     if (withAlternatives) {
@@ -342,13 +406,13 @@ export class DiscoveryAgent {
 
     const oneLiners = await this.oneLiners(insights);
     const recommendations: Recommendation[] = insights.map((insight, index) => {
-      const explanation = buildExplanation(insight, resolved);
-      const bridgedFrom = bridge?.bridgedIds.has(insight.id) ? bridge.input : undefined;
-      // A bridge card came from a query seeded with that one input alone, so it is "because of" that input.
-      if (bridgedFrom && !explanation.becauseOf.includes(bridgedFrom)) {
-        explanation.becauseOf.unshift(bridgedFrom);
-        explanation.scores.unshift(null);
-      }
+      const bridgedFrom = bridge?.bridgedIds.has(insight.id) ? bridge.ran?.input : undefined;
+      // A bridge card was not cited by Qloo in the combined query: its only "because of" is the input the agent
+      // seeded the extra query with, marked as seeded (bridgedFrom) and carrying no Qloo score.
+      const explanation = bridgedFrom
+        ? { becauseOf: [bridgedFrom], scores: [null], text: insight.description }
+        : buildExplanation(insight, resolved);
+      const sharedTagList = bridgedFrom ? bridge?.sharedById.get(insight.id) : undefined;
       return {
         id: insight.id,
         title: insight.name,
@@ -359,10 +423,11 @@ export class DiscoveryAgent {
         explanation: explanation.text,
         oneLiner: oneLiners.get(insight.id),
         artIndex: index % 10,
-        explainabilityPresent: explanation.becauseOf.length > 0,
+        explainabilityPresent: !bridgedFrom && explanation.becauseOf.length > 0,
         popularity: insight.popularity,
         badge: obscurityBadge(insight.popularity),
         ...(bridgedFrom ? { bridgedFrom } : {}),
+        ...(sharedTagList?.length ? { sharedTags: sharedTagList } : {}),
         ...(insight.imageUrl ? { imageUrl: insight.imageUrl } : {}),
       };
     });
@@ -374,28 +439,31 @@ export class DiscoveryAgent {
 
     return {
       recommendations, resolved, unresolved, matches, trace, mode: this.qloo.mode,
-      ...(bridge?.ran ? { bridgedInput: bridge.input } : {}),
+      ...(bridge?.ran ? { bridgedInput: bridge.ran.input, bridge: bridge.ran } : {}),
     };
   }
 
   /**
-   * The agent's taste decision: count how many cards cite each input. If one input is cited by none, run ONE extra
-   * /v2/insights call seeded with that input alone (same type and distance parameters, take=4), merge the new cards and
-   * drop the weakest first-batch cards so the page stays at its size.
+   * The agent's taste decision. Count how many cards cite each input. If one input is cited by none, run ONE extra
+   * /v2/insights call seeded with that input alone (same type and distance parameters, take=8) as a *candidate pool*.
+   * A candidate is merged only if it shares >= BRIDGE_MIN_SHARED_TAGS Qloo tags with the union of the user's OTHER
+   * inputs' tags (affinity, then popularity, break ties); at most BRIDGE_MAX_MERGE merge, each replacing the
+   * lowest-affinity first-query card that is not some input's only citation. No passing candidate → nothing merges.
    */
   private async tasteBridge(
     insights: QlooInsight[],
     resolved: ResolvedEntity[],
     baseQuery: InsightQuery,
     run: (query: InsightQuery) => Promise<QlooInsight[]>,
-  ): Promise<{ insights: QlooInsight[]; detail: string; ran: boolean; input?: string; bridgedIds: Set<string> }> {
+  ): Promise<BridgeOutcome> {
     const counts = citationCounts(insights, resolved);
     const total = insights.length;
     const uncited = counts.filter((entry) => entry.count === 0);
     const target = uncited[0]?.entity;
+    const none = { insights, bridgedIds: new Set<string>(), sharedById: new Map<string, string[]>() };
     if (!target) {
       const shares = counts.map((entry) => `${entry.entity.name} ${entry.count}`).join(" · ");
-      return { insights, ran: false, bridgedIds: new Set(), detail: `Decision: every input is represented (${shares}); kept first query` };
+      return { ...none, detail: `Decision: every input is represented (${shares}); kept first query` };
     }
     const also = uncited.length > 1 ? ` (also uncited: ${uncited.slice(1).map((entry) => entry.entity.name).join(", ")}; one extra query only)` : "";
     const bridgeQuery: InsightQuery = {
@@ -404,28 +472,54 @@ export class DiscoveryAgent {
       excludeEntityIds: [...new Set([...baseQuery.excludeEntityIds, ...insights.map((insight) => insight.id)])],
       take: BRIDGE_TAKE,
     };
-    const head = `Decision: ${target.name} was cited by 0 of ${total} cards → ran one extra query seeded with it alone`;
+    const head = `Decision: ${target.name} was cited by 0/${total}`;
     let extra: QlooInsight[];
     try {
       extra = await run(bridgeQuery);
     } catch (error) {
       // The bridge is an improvement, never a reason to fail the whole page.
       const reason = error instanceof Error ? error.message.slice(0, 120) : "error";
-      return { insights, ran: false, bridgedIds: new Set(), detail: `${head}; it failed (${reason}), kept first query${also}` };
+      return { ...none, detail: `${head} → the candidate query failed (${reason}); kept first query${also}` };
     }
     const seen = new Set(insights.map((insight) => insight.id));
-    const fresh = extra.filter((insight) => !seen.has(insight.id) && (seen.add(insight.id), true));
-    const room = Math.max(baseQuery.take - fresh.length, 0);
-    const dropCount = Math.max(insights.length - room, 0);
-    const dropped = pickCardsToDrop(insights, resolved, dropCount);
-    const merged = [...insights.filter((insight) => !dropped.has(insight.id)), ...fresh];
-    const droppedNote = dropped.size ? `; dropped ${dropped.size} lowest-affinity card${dropped.size === 1 ? "" : "s"} from the first query` : "";
+    const candidates = extra.filter((insight) => !seen.has(insight.id) && (seen.add(insight.id), true));
+
+    // Relevance gate: shared tags with the union of the OTHER inputs' tags.
+    const others = resolved.filter((entity) => entity.id !== target.id);
+    const otherTags = new Set((await Promise.all(others.map((entity) => this.tagsOf(entity))))
+      .flat().flatMap((tag) => tagKey(tag) ?? []));
+    const scored = candidates
+      .map((insight, index) => ({ insight, index, shared: sharedTags(insight.tags, otherTags) }))
+      .sort((a, b) => b.shared.length - a.shared.length
+        || (affinityOf(b.insight) ?? -Infinity) - (affinityOf(a.insight) ?? -Infinity)
+        || (b.insight.popularity ?? -Infinity) - (a.insight.popularity ?? -Infinity)
+        || a.index - b.index);
+    const passed = scored.filter((entry) => entry.shared.length >= BRIDGE_MIN_SHARED_TAGS);
+    const fetched = `→ fetched ${candidates.length} candidate${candidates.length === 1 ? "" : "s"} seeded with it`;
+    const gate = `shared tags ≥ ${BRIDGE_MIN_SHARED_TAGS} with your other interests`;
+    const quote = (entries: typeof scored) => entries.map((entry) => `"${entry.insight.name}" ${entry.shared.length}`).join(", ");
+    const params = `\n${formatInsightsQuery(bridgeQuery)}\nqloo.returned=${extra.length}\nother inputs' tags=${otherTags.size}`;
+
+    // Room: a short first page takes candidates without dropping anything; otherwise replace the weakest cards.
+    const wanted = Math.min(passed.length, BRIDGE_MAX_MERGE);
+    const room = Math.max(baseQuery.take - insights.length, 0);
+    const dropped = pickCardsToDrop(insights, resolved, Math.max(wanted - room, 0));
+    const merging = passed.slice(0, Math.min(wanted, room + dropped.size));
+    const ran = { input: target.name, candidates: candidates.length, passed: passed.length, merged: merging.length };
+    if (!merging.length) {
+      const best = scored.slice(0, 2).filter((entry) => entry.shared.length > 0);
+      const why = passed.length
+        ? `${passed.length} passed the relevance gate (${gate}: ${quote(passed)}) but every first-query card is an input's only citation`
+        : `0 passed the relevance gate (${gate}${best.length ? `; best: ${quote(best)}` : ""})`;
+      return { ...none, ran, detail: `${head} ${fetched}; ${why}; kept first query${also}${params}` };
+    }
+    const tagLines = merging.map((entry) => `"${entry.insight.name}" shares: ${entry.shared.join(", ")}`).join("\n");
     return {
-      insights: merged,
-      ran: true,
-      input: target.name,
-      bridgedIds: new Set(fresh.map((insight) => insight.id)),
-      detail: `${head}; merged ${fresh.length} card${fresh.length === 1 ? "" : "s"}${droppedNote}${also}\n${formatInsightsQuery(bridgeQuery)}\nqloo.returned=${extra.length}`,
+      insights: [...insights.filter((insight) => !dropped.has(insight.id)), ...merging.map((entry) => entry.insight)],
+      ran,
+      bridgedIds: new Set(merging.map((entry) => entry.insight.id)),
+      sharedById: new Map(merging.map((entry) => [entry.insight.id, entry.shared])),
+      detail: `${head} ${fetched}; ${passed.length} passed the relevance gate (${gate}: ${quote(passed)}); merged ${merging.length}, replaced ${dropped.size}${also}\n${tagLines}${params}`,
     };
   }
 

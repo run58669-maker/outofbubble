@@ -6,14 +6,16 @@ import {
   requestUiState,
   type RequestUiState,
 } from "./request-policy.js";
+import { NO_EXCLUSIONS, addExclusion, carryExclusions, type ExclusionState } from "./exclusions.js";
 
 type TargetType = "artist" | "book" | "podcast" | "movie" | "tv_show" | "video_game" | "place";
 type Distance = 0 | 1 | 2;
-type Recommendation = { id: string; title: string; type: TargetType; becauseOf: string[]; becauseOfScores?: Array<number | null>; distance: Distance; explanation: string; oneLiner?: string; artIndex: number; explainabilityPresent: boolean; popularity?: number; badge?: string; bridgedFrom?: string; imageUrl?: string };
+type Recommendation = { id: string; title: string; type: TargetType; becauseOf: string[]; becauseOfScores?: Array<number | null>; distance: Distance; explanation: string; oneLiner?: string; artIndex: number; explainabilityPresent: boolean; popularity?: number; badge?: string; bridgedFrom?: string; sharedTags?: string[]; imageUrl?: string };
 type TraceStep = { stage: string; title: string; detail: string };
 type Entity = { id: string; name: string; type: string; disambiguation?: string };
 type Match = { interest: string; entity?: Entity; alternatives?: Entity[] };
-type DiscoveryResponse = { recommendations: Recommendation[]; trace: TraceStep[]; mode: "mock" | "http"; unresolved: string[]; matches?: Match[]; resolved?: Entity[]; bridgedInput?: string; error?: string };
+type BridgeSummary = { input: string; candidates: number; passed: number; merged: number };
+type DiscoveryResponse = { recommendations: Recommendation[]; trace: TraceStep[]; mode: "mock" | "http"; unresolved: string[]; matches?: Match[]; resolved?: Entity[]; bridgedInput?: string; bridge?: BridgeSummary; error?: string };
 /** One input: `type` is an explicit hint, `id` a match the user picked from the type-chip picker. */
 type Interest = { name: string; type?: string; id?: string };
 
@@ -26,13 +28,15 @@ const examples: Array<{ label: string; short: string; interests: Interest[]; tar
 const distanceLabels = ["Next door", "Across town", "Out of the bubble"];
 let interests: Interest[] = examples[0].interests.map((item) => ({ ...item }));
 let recommendations: Recommendation[] = [];
-let excludedIds: string[] = [];
+/** "I already know this" ids: kept across slider moves, match switches and refills (see exclusions.ts). */
+let exclusions: ExclusionState = NO_EXCLUSIONS;
 /** The full trace of the last discovery run; refills are appended below it, never replace it. */
 let baseTrace: TraceStep[] = [];
 let refillTraces: Array<{ label: string; steps: TraceStep[] }> = [];
 /** Resolved input names (Qloo's spelling) for the taste-bridge bar, and the input that needed the extra query. */
 let resolvedNames: string[] = [];
 let bridgedInput: string | undefined;
+let bridgeSummary: BridgeSummary | undefined;
 let unresolvedNames = new Set<string>();
 /** Last resolution per input name (lowercase), from /api/discover or the picker. */
 let matchByName = new Map<string, Match>();
@@ -63,6 +67,18 @@ class RequestTimeoutError extends Error {
   constructor() {
     super("The request timed out while the server was waking up.");
     this.name = "RequestTimeoutError";
+  }
+}
+
+/**
+ * Qloo busy or slow (server answered 503/504) or our own per-IP limit (429): the request-status bar shows the server's
+ * message with the Retry button. Subclasses the timeout error so callers restore the cards without a toast.
+ */
+class RetryableRequestError extends RequestTimeoutError {
+  constructor(message: string) {
+    super();
+    this.message = message;
+    this.name = "RetryableRequestError";
   }
 }
 
@@ -144,10 +160,22 @@ function renderInterests() {
     const chip = document.createElement("button");
     chip.type = "button";
     chip.className = "token-type";
-    chip.textContent = unresolved ? "no match" : shownType ? typeText(shownType) : "auto";
+    const typeWord = unresolved ? "no match" : shownType ? typeText(shownType) : "auto";
+    // The user's typed text stays on the token; when Qloo matched a different name, the chip shows it: typed → matched · type.
+    const matchedName = !unresolved && match?.entity && match.entity.name.trim().toLocaleLowerCase() !== interest.name.trim().toLocaleLowerCase()
+      ? match.entity.name : undefined;
+    if (matchedName) {
+      const name = document.createElement("span");
+      name.className = "token-match";
+      name.textContent = `→ ${matchedName}`;
+      chip.append(name, document.createTextNode(` · ${typeWord}`));
+      chip.title = `${interest.name} → ${matchedName} · ${typeWord}`;
+    } else {
+      chip.textContent = typeWord;
+    }
     chip.setAttribute("aria-haspopup", "true");
     chip.setAttribute("aria-expanded", String(openPickerIndex === index));
-    chip.setAttribute("aria-label", `${interest.name}: ${unresolved ? "no match" : `matched as ${chip.textContent}`}. Show other matches`);
+    chip.setAttribute("aria-label", `${interest.name}: ${unresolved ? "no match" : `matched as ${matchedName ? `${matchedName}, ` : ""}${typeWord}`}. Show other matches`);
     chip.addEventListener("click", () => (openPickerIndex === index ? closePicker(true) : void openPicker(index, token, chip)));
     token.append(chip);
 
@@ -217,9 +245,11 @@ function chipAt(index: number) {
 }
 
 function pickMatch(index: number, entity: Entity) {
-  interests[index] = { name: entity.name, type: entity.type, id: entity.id };
-  const key = entity.name.toLocaleLowerCase();
-  matchByName.set(key, { interest: entity.name, entity });
+  // Keep what the user typed; only the match (id + type) changes. The chip shows "typed → matched · type".
+  const typed = interests[index]!.name;
+  interests[index] = { name: typed, type: entity.type, id: entity.id };
+  const key = typed.toLocaleLowerCase();
+  matchByName.set(key, { interest: typed, entity });
   unresolvedNames.delete(key);
   closePicker();
   renderInterests();
@@ -286,8 +316,8 @@ async function openPicker(index: number, token: HTMLElement, chip: HTMLButtonEle
       return option;
     }));
     (panel.querySelector("button") ?? chip).focus();
-  } catch {
-    if (pickerPanel === panel) status.textContent = "Could not load other matches.";
+  } catch (error) {
+    if (pickerPanel === panel) status.textContent = error instanceof Error && error.message !== "lookup failed" ? error.message : "Could not load other matches.";
   }
 }
 
@@ -323,16 +353,17 @@ function setLoading(loading: boolean) {
  */
 function currentInput(reuseIds = false) {
   return {
-    interests: reuseIds
-      ? interests.map((interest) => {
-          const entity = matchByName.get(interest.name.toLocaleLowerCase())?.entity;
-          return entity ? { id: entity.id, name: entity.name, type: entity.type } : interest;
-        })
-      : interests,
+    interests: interests.map((interest) => {
+      const entity = matchByName.get(interest.name.toLocaleLowerCase())?.entity;
+      if (reuseIds && entity) return { id: entity.id, name: entity.name, type: entity.type };
+      // A picked match goes back under Qloo's name for it; the typed text stays on the token.
+      if (interest.id) return { id: interest.id, name: entity?.id === interest.id ? entity.name : interest.name, ...(interest.type ? { type: interest.type } : {}) };
+      return interest;
+    }),
     targetType: target.value as TargetType,
     distance: Number(distance.value) as Distance,
     city: target.value === "place" ? cityInput.value.trim() : undefined,
-    excludeIds: excludedIds,
+    excludeIds: exclusions.ids,
   };
 }
 
@@ -343,6 +374,7 @@ async function api<T>(path: string, body: object, retry: () => void): Promise<T>
   let healthPollTimer: number | undefined;
   let pollingStopped = false;
   let timedOut = false;
+  let keepStatus = false;
   hideRequestStatus();
 
   const pollHealth = async () => {
@@ -387,6 +419,13 @@ async function api<T>(path: string, body: object, retry: () => void): Promise<T>
       signal: controller.signal,
     });
     const payload = await response.json() as T & { error?: string };
+    if (response.status === 429 || response.status === 503 || response.status === 504) {
+      const message = payload.error ?? "Qloo is rate-limiting us, try again in a minute";
+      keepStatus = true;
+      showRequestStatus({ phase: "timed-out", message, canRetry: true }, retry);
+      requestStatus.classList.add("error");
+      throw new RetryableRequestError(message);
+    }
     if (!response.ok) throw new Error(payload.error ?? "The discovery path closed unexpectedly.");
     return payload;
   } catch (error) {
@@ -398,7 +437,7 @@ async function api<T>(path: string, body: object, retry: () => void): Promise<T>
     window.clearTimeout(wakeTimer);
     window.clearTimeout(timeoutTimer);
     if (healthPollTimer !== undefined) window.clearTimeout(healthPollTimer);
-    if (!timedOut && requestId === activeRequestId) hideRequestStatus();
+    if (!timedOut && !keepStatus && requestId === activeRequestId) hideRequestStatus();
   }
 }
 
@@ -459,12 +498,18 @@ function renderCard(item: Recommendation) {
     chip.title = typeof score === "number" ? `Qloo explainability score ${score.toFixed(2)}` : "Qloo gave no score for this source";
     if (reason === item.bridgedFrom) {
       chip.classList.add("bridged");
-      chip.textContent = `Bridge from ${reason}`;
-      chip.title = `From the agent's extra query seeded with ${reason} alone${typeof score === "number" ? ` · Qloo score ${score.toFixed(2)}` : ""}`;
+      chip.textContent = `Seeded from ${reason}`;
+      chip.title = `Not a Qloo citation: the agent seeded its extra query with ${reason} alone, then kept this card because it shares tags with your other interests`;
     }
     reasons.append(chip);
   });
-  if (!item.explainabilityPresent || item.becauseOf.length === 0) {
+  if (item.bridgedFrom && item.sharedTags?.length) {
+    const shared = document.createElement("p");
+    shared.className = "shared-tags";
+    shared.textContent = `Shares tags with your other picks: ${item.sharedTags.join(" · ")}`;
+    reasons.append(shared);
+  }
+  if (!item.bridgedFrom && (!item.explainabilityPresent || item.becauseOf.length === 0)) {
     const absent = document.createElement("p");
     absent.className = "no-explanation";
     absent.textContent = "Qloo did not say why";
@@ -506,7 +551,9 @@ function renderBridgeBar() {
   if (bar.hidden) return;
   const total = recommendations.length;
   list.replaceChildren(...resolvedNames.map((name) => {
-    const cited = recommendations.filter((item) => item.becauseOf.includes(name)).length;
+    // Qloo-cited and agent-seeded are counted apart: a seeded card is the app's own attribution, not Qloo's.
+    const seeded = recommendations.filter((item) => item.bridgedFrom === name).length;
+    const cited = recommendations.filter((item) => item.bridgedFrom !== name && item.becauseOf.includes(name)).length;
     const row = document.createElement("li");
     row.className = cited === 0 ? "uncited" : "";
     const label = document.createElement("span");
@@ -518,15 +565,24 @@ function renderBridgeBar() {
     const fill = document.createElement("i");
     fill.style.width = `${Math.round((cited / total) * 100)}%`;
     meter.append(fill);
+    if (seeded) {
+      const seededFill = document.createElement("i");
+      seededFill.className = "seeded";
+      seededFill.style.left = fill.style.width;
+      seededFill.style.width = `${Math.round((seeded / total) * 100)}%`;
+      meter.append(seededFill);
+    }
     const share = document.createElement("span");
     share.className = "bridge-count";
-    share.textContent = ` · ${cited}/${total}`;
+    share.textContent = ` · ${cited} cited${seeded ? ` · ${seeded} seeded` : ""}`;
+    share.title = `${cited} of ${total} cards cite it in Qloo's explainability${seeded ? `; ${seeded} came from the agent's extra query seeded with it` : ""}`;
     row.append(label, share, meter);
-    if (name === bridgedInput) {
+    if (name === bridgedInput && bridgeSummary) {
       const flag = document.createElement("span");
       flag.className = "bridge-flag";
-      flag.textContent = "needed an extra query";
-      flag.title = "Cited by no card in the first query, so the agent ran one more query seeded with it alone";
+      const { candidates, passed, merged } = bridgeSummary;
+      flag.textContent = merged ? `extra query: ${merged} of ${candidates} kept` : `extra query: none relevant enough`;
+      flag.title = `Cited by no card, so the agent fetched ${candidates} candidates seeded with it alone; ${passed} shared 2+ tags with your other interests${merged ? `, ${merged} merged` : ", so none were merged"}`;
       row.append(flag);
     }
     return row;
@@ -539,6 +595,7 @@ function renderResults(response: DiscoveryResponse, isDemoRun = false) {
   refillTraces = [];
   resolvedNames = (response.resolved ?? []).map((entity) => entity.name);
   bridgedInput = response.bridgedInput;
+  bridgeSummary = response.bridge;
   grid.replaceChildren(...recommendations.map(renderCard));
   renderBridgeBar();
   results.hidden = false;
@@ -606,7 +663,8 @@ async function discover(isDemoRun = false, reuseIds = false) {
   if (!reuseIds) unresolvedNames.clear();
   renderInterests();
   try {
-    excludedIds = [];
+    // Known items stay out across re-runs; only a different set of inputs (or Start over) clears them.
+    exclusions = carryExclusions(exclusions, interests.map((interest) => interest.name));
     const response = await api<DiscoveryResponse>("/api/discover", currentInput(reuseIds), () => void discover(isDemoRun, reuseIds));
     applyMatches(response);
     renderResults(response, isDemoRun);
@@ -632,7 +690,7 @@ async function exclude(item: Recommendation, article: HTMLElement, button: HTMLB
       knownId: item.id,
       currentIds: recommendations.map((entry) => entry.id),
     }, () => void exclude(item, article, button));
-    excludedIds.push(item.id);
+    exclusions = addExclusion(exclusions, item.id);
     const index = recommendations.findIndex((entry) => entry.id === item.id);
     if (response.recommendations[0]) {
       response.recommendations[0].artIndex = item.artIndex;
@@ -732,9 +790,10 @@ $("clear-button").addEventListener("click", () => {
   unresolvedNames.clear();
   matchByName.clear();
   recommendations = [];
-  excludedIds = [];
+  exclusions = NO_EXCLUSIONS;
   resolvedNames = [];
   bridgedInput = undefined;
+  bridgeSummary = undefined;
   renderInterests();
   showEmpty();
   interestInput.focus();

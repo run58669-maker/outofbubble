@@ -2,74 +2,141 @@ import express, { type NextFunction, type Request, type Response } from "express
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { DiscoveryAgent } from "./agent.js";
-import { HttpQlooClient } from "./http-qloo-client.js";
+import { DiscoverCache, discoverCacheKey } from "./discover-cache.js";
+import { InputError, UpstreamError } from "./errors.js";
+import { HttpQlooClient, QlooHttpError } from "./http-qloo-client.js";
 import { MockQlooClient } from "./mock-qloo-client.js";
-import type { DiscoverInput, InterestInput, TargetType } from "./types.js";
+import { rateLimit, type RateLimitOptions } from "./rate-limit.js";
+import { ENTITY_TYPES, type DiscoverInput, type InterestInput, type TargetType } from "./types.js";
 
-/** Interests arrive as plain names or as { name, type?, id? }; anything else is dropped. */
+/** Route-layer input caps (checked before anything reaches the agent or Qloo). */
+export const LIMITS = { interests: 10, name: 100, id: 64, city: 100, ids: 50 } as const;
+export const API_RATE_LIMIT: RateLimitOptions = { max: 20, windowMs: 60_000 };
+
+function bodyOf(request: Request): Record<string, unknown> {
+  return typeof request.body === "object" && request.body !== null ? request.body as Record<string, unknown> : {};
+}
+
+/** Interests arrive as plain names or as { name, type?, id? }; anything over the caps is a 400. */
 function interestsFrom(value: unknown): Array<string | InterestInput> {
-  if (!Array.isArray(value)) return [];
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw new InputError("interests must be a list.");
+  if (value.length > LIMITS.interests) throw new InputError(`At most ${LIMITS.interests} interests.`);
   return value.flatMap((item): Array<string | InterestInput> => {
-    if (typeof item === "string") return [item];
+    if (typeof item === "string") {
+      if (item.length > LIMITS.name) throw new InputError(`Each interest name must be at most ${LIMITS.name} characters.`);
+      return [item];
+    }
     if (typeof item !== "object" || item === null) return [];
     const { name, type, id } = item as Record<string, unknown>;
     if (typeof name !== "string") return [];
+    if (name.length > LIMITS.name) throw new InputError(`Each interest name must be at most ${LIMITS.name} characters.`);
+    if (type !== undefined && (typeof type !== "string" || !(ENTITY_TYPES as readonly string[]).includes(type.trim().toLowerCase()))) {
+      throw new InputError("Unknown interest type.");
+    }
+    if (id !== undefined && (typeof id !== "string" || id.length > LIMITS.id)) throw new InputError(`Each id must be at most ${LIMITS.id} characters.`);
     return [{ name, ...(typeof type === "string" ? { type } : {}), ...(typeof id === "string" ? { id } : {}) }];
   });
 }
 
-function bodyToInput(body: unknown): DiscoverInput {
-  const value = typeof body === "object" && body !== null ? body as Record<string, unknown> : {};
+function idsFrom(value: unknown, field: string): string[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw new InputError(`${field} must be a list.`);
+  if (value.length > LIMITS.ids) throw new InputError(`At most ${LIMITS.ids} ${field}.`);
+  return value.map((item) => {
+    if (typeof item !== "string" || item.length > LIMITS.id) throw new InputError(`Each of ${field} must be an id of at most ${LIMITS.id} characters.`);
+    return item;
+  });
+}
+
+function bodyToInput(body: Record<string, unknown>): DiscoverInput {
+  if (body.city !== undefined && (typeof body.city !== "string" || body.city.length > LIMITS.city)) {
+    throw new InputError(`City must be at most ${LIMITS.city} characters.`);
+  }
   return {
-    interests: interestsFrom(value.interests),
-    targetType: value.targetType as TargetType,
-    distance: Number(value.distance) as 0 | 1 | 2,
-    city: typeof value.city === "string" ? value.city : undefined,
-    excludeIds: Array.isArray(value.excludeIds) ? value.excludeIds.filter((item): item is string => typeof item === "string") : [],
-    limit: typeof value.limit === "number" ? value.limit : undefined,
+    interests: interestsFrom(body.interests),
+    targetType: body.targetType as TargetType,
+    distance: Number(body.distance) as 0 | 1 | 2,
+    city: typeof body.city === "string" ? body.city : undefined,
+    excludeIds: idsFrom(body.excludeIds, "excludeIds"),
+    limit: typeof body.limit === "number" ? body.limit : undefined,
   };
 }
 
-export function createApp(agent = new DiscoveryAgent(process.env.QLOO_API_KEY ? new HttpQlooClient(process.env.QLOO_API_KEY) : new MockQlooClient())) {
+export interface AppOptions {
+  rateLimit?: RateLimitOptions;
+  cache?: DiscoverCache;
+}
+
+export function createApp(
+  agent = new DiscoveryAgent(process.env.QLOO_API_KEY ? new HttpQlooClient(process.env.QLOO_API_KEY) : new MockQlooClient()),
+  options: AppOptions = {},
+) {
   const app = express();
+  const cache = options.cache ?? new DiscoverCache();
   app.disable("x-powered-by");
+  // Render terminates TLS in front of us: trust exactly one proxy hop so req.ip is the client, not the proxy.
+  app.set("trust proxy", 1);
+  app.use("/api", (_request, response, next) => {
+    response.setHeader("Cache-Control", "no-store");
+    next();
+  });
+  app.get("/api/health", (_request, response) => response.json({ ok: true, mode: agent.mode }));
+  // Health polling during a cold start is exempt; every other /api route counts toward the per-IP limit.
+  app.use("/api", rateLimit(options.rateLimit ?? API_RATE_LIMIT));
   app.use(express.json({ limit: "32kb" }));
 
   app.post("/api/resolve", async (request, response, next) => {
     try {
-      const value = typeof request.body === "object" && request.body !== null ? request.body as Record<string, unknown> : {};
+      const body = bodyOf(request);
       // `alternatives: true` also returns up to three other close matches per input (the type-chip picker).
-      const { matches } = await agent.resolveMatches(interestsFrom(value.interests), value.alternatives === true);
+      const { matches } = await agent.resolveMatches(interestsFrom(body.interests), body.alternatives === true);
       response.json({ resolved: matches.flatMap((match) => (match.entity ? [match.entity] : [])), matches });
     } catch (error) { next(error); }
   });
 
   app.post("/api/discover", async (request, response, next) => {
     try {
-      response.json(await agent.discover(bodyToInput(request.body)));
+      const input = bodyToInput(bodyOf(request));
+      const key = discoverCacheKey(input);
+      const cached = cache.get(key);
+      if (cached) {
+        response.json(cached);
+        return;
+      }
+      const result = await agent.discover(input);
+      cache.set(key, result);
+      response.json(result);
     } catch (error) { next(error); }
   });
 
   app.post("/api/exclude", async (request, response, next) => {
     try {
-      const value = typeof request.body === "object" && request.body !== null ? request.body as Record<string, unknown> : {};
-      const currentIds = Array.isArray(value.currentIds) ? value.currentIds.filter((item): item is string => typeof item === "string") : [];
-      const knownId = typeof value.knownId === "string" ? value.knownId : "";
-      if (!knownId) throw new Error("knownId is required.");
-      response.json(await agent.refill(bodyToInput(request.body), currentIds, knownId));
+      const body = bodyOf(request);
+      const currentIds = idsFrom(body.currentIds, "currentIds");
+      const knownId = body.knownId;
+      if (typeof knownId !== "string" || !knownId) throw new InputError("knownId is required.");
+      if (knownId.length > LIMITS.id) throw new InputError(`knownId must be at most ${LIMITS.id} characters.`);
+      response.json(await agent.refill(bodyToInput(body), currentIds, knownId));
     } catch (error) { next(error); }
   });
-
-  app.get("/api/health", (_request, response) => response.json({ ok: true, mode: agent.mode }));
 
   const currentDir = dirname(fileURLToPath(import.meta.url));
   const webDir = resolve(currentDir, "../web");
   app.use(express.static(webDir, { extensions: ["html"] }));
   app.get("*", (_request, response) => response.sendFile(resolve(webDir, "index.html")));
 
-  app.use((error: unknown, _request: Request, response: Response, _next: NextFunction) => {
-    const message = error instanceof Error ? error.message : "Something went wrong.";
-    response.status(400).json({ error: message });
+  app.use((error: unknown, request: Request, response: Response, _next: NextFunction) => {
+    // body-parser: oversized → 413, malformed JSON → 400.
+    const parserType = (error as { type?: unknown } | null)?.type;
+    if (parserType === "entity.too.large") return void response.status(413).json({ error: "Request body is too large." });
+    if (parserType === "entity.parse.failed") return void response.status(400).json({ error: "Request body is not valid JSON." });
+    if (error instanceof InputError) return void response.status(error.status).json({ error: error.message });
+    if (error instanceof UpstreamError) return void response.status(error.status).json({ error: error.message });
+    // Anything else: details go to the server log only (QlooHttpError carries Qloo's 600-char excerpt, never the key).
+    console.error(`[${request.method} ${request.path}]`, error instanceof Error ? `${error.name}: ${error.message}` : error);
+    const status = error instanceof QlooHttpError ? 502 : 500;
+    response.status(status).json({ error: status === 502 ? "Qloo could not answer that request." : "Something went wrong on our side." });
   });
   return app;
 }
