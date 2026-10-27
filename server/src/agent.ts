@@ -1,6 +1,10 @@
 import { distanceProfile } from "./distance.js";
+import { buildInsightsParams } from "./http-qloo-client.js";
+import { pickBestMatch } from "./name-match.js";
 import { generateOneLiners } from "./one-liners.js";
-import { TARGET_TYPES, type DiscoverInput, type DiscoveryResult, type QlooClient, type QlooInsight, type Recommendation, type ResolvedEntity, type TraceStep } from "./types.js";
+import { TARGET_TYPES, type DiscoverInput, type DiscoveryResult, type InsightQuery, type QlooClient, type QlooInsight, type Recommendation, type ResolvedEntity, type TraceStep } from "./types.js";
+
+export const DEFAULT_CARD_COUNT = 10;
 
 export function normalizeInterestNames(interests: string[]): string[] {
   const seen = new Set<string>();
@@ -39,30 +43,9 @@ export function buildExplanation(insight: QlooInsight, resolved: ResolvedEntity[
   };
 }
 
-function formatInsightsQuery(query: {
-  targetType: string;
-  signalEntityIds: string[];
-  excludeEntityIds: string[];
-  limit: number;
-  city?: string;
-  biasTrends: string;
-  diversifyBy: string;
-  popularityMin?: number;
-  popularityMax?: number;
-}): string {
-  const parameters = [
-    `filter.type=urn:entity:${query.targetType}`,
-    `signal.interests.entities=${query.signalEntityIds.join(",")}`,
-    `bias.trends=${query.biasTrends}`,
-    `diversify.by=${query.diversifyBy}`,
-    `limit=${query.limit}`,
-  ];
-  if (query.popularityMin !== undefined) parameters.push(`filter.popularity.min=${query.popularityMin}`);
-  if (query.popularityMax !== undefined) parameters.push(`filter.popularity.max=${query.popularityMax}`);
-  if (query.city) parameters.push(`filter.location.query=${query.city}`);
-  parameters.push(`filter.exclude.entities=${query.excludeEntityIds.length ? query.excludeEntityIds.join(",") : "(not sent)"}`);
-  parameters.push("feature.explainability=true");
-  return parameters.join("\n");
+/** One line per parameter actually sent to Qloo /v2/insights (same builder as HttpQlooClient). */
+function formatInsightsQuery(query: InsightQuery): string {
+  return [...buildInsightsParams(query)].map(([key, value]) => `${key}=${value}`).join("\n");
 }
 
 export class DiscoveryAgent {
@@ -77,7 +60,7 @@ export class DiscoveryAgent {
 
   private async resolveInputs(interests: string[]): Promise<{ resolved: ResolvedEntity[]; unresolved: string[]; detail: string }> {
     const unique = normalizeInterestNames(interests);
-    const matches = await Promise.all(unique.map(async (interest) => ({ interest, entity: (await this.qloo.search(interest))[0] })));
+    const matches = await Promise.all(unique.map(async (interest) => ({ interest, entity: pickBestMatch(interest, await this.qloo.search(interest)) })));
     const resolved = matches.map((match) => match.entity).filter((entity): entity is ResolvedEntity => Boolean(entity));
     const unresolved = matches.filter((match) => !match.entity).map((match) => match.interest);
     const detail = matches.map((match) => match.entity
@@ -113,23 +96,26 @@ export class DiscoveryAgent {
     }
 
     const profile = distanceProfile(input.distance);
-    const insightsQuery = {
+    const insightsQuery: InsightQuery = {
       targetType: input.targetType,
       signalEntityIds: resolved.map((entity) => entity.id),
       excludeEntityIds: input.excludeIds ?? [],
-      limit: Math.min(Math.max(input.limit ?? 8, 1), 10),
+      take: Math.min(Math.max(input.limit ?? DEFAULT_CARD_COUNT, 1), DEFAULT_CARD_COUNT),
       city: input.city,
       biasTrends: profile.biasTrends,
       diversifyBy: profile.diversifyBy,
       popularityMin: profile.popularityMin,
       popularityMax: profile.popularityMax,
-      explainability: true as const,
+      explainability: true,
     };
-    const insights = await this.qloo.insights(insightsQuery);
+    const returned = await this.qloo.insights(insightsQuery);
+    // Defensive: never show more cards than requested, even if the API ignores the page size.
+    const insights = returned.slice(0, insightsQuery.take);
     trace.push({
       stage: "discover",
       title: "Insights query",
-      detail: formatInsightsQuery(insightsQuery),
+      detail: `${formatInsightsQuery(insightsQuery)}
+qloo.returned=${returned.length}`,
     });
 
     const oneLiners = await this.oneLiners(insights);

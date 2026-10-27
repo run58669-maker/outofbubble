@@ -169,9 +169,9 @@ h1 { margin: 0 0 14px; font-size: clamp(25px, 2.4vw, 34px); line-height: 1.08; l
 .reason-list { display: flex; flex-wrap: wrap; gap: 6px; margin: 15px 0 10px; }
 .reason-list span { max-width: 100%; padding: 6px 10px; overflow: hidden; color: #d8cbd5; border: 1px solid #604459; border-radius: 999px; background: #211725; font: 400 11px/1 var(--sans); text-overflow: ellipsis; white-space: nowrap; }
 .reason-list .no-explanation { margin: 0; color: #887b89; font-size: 11px; font-style: italic; }
-.card-footer { display: flex; align-items: end; justify-content: space-between; gap: 14px; margin-top: auto; }
-.card-footer p { max-width: 390px; margin: 0; color: #c8bdc5; font: 400 13px/1.4 var(--serif); }
-.card-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 10px; }
+.card-footer { display: flex; flex-direction: column; align-items: stretch; gap: 10px; margin-top: auto; }
+.card-footer p { max-width: none; margin: 0; color: #c8bdc5; font: 400 13px/1.4 var(--serif); }
+.card-actions { display: flex; flex: 0 0 auto; align-self: flex-end; align-items: center; gap: 10px; }
 .search-link { color: #b9a8b7; font-size: 11px; text-underline-offset: 3px; white-space: nowrap; }
 .search-link:hover { color: var(--coral-bright); }
 .known-button { flex: 0 0 auto; height: 39px; padding: 0 14px; color: #e2d7dc; border: 1px solid #c95e51; border-radius: 8px; background: transparent; font-family: var(--serif); transition: color .2s, background .2s; }

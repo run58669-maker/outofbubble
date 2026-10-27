@@ -25,6 +25,37 @@ function arrayAt(payload: unknown, paths: string[][]): unknown[] {
   return [];
 }
 
+/** Qloo search rows carry the type as `types: ["urn:entity:book"]` and/or `subtype`; strip the URN prefix. */
+export function entityType(row: Record<string, unknown>, properties: Record<string, unknown>): string {
+  const types = Array.isArray(row.types) ? row.types : [];
+  const raw = stringValue(
+    ...types.filter((item): item is string => typeof item === "string" && item.startsWith("urn:entity:")),
+    row.subtype,
+    row.type,
+    properties.type,
+    ...types,
+  );
+  return raw ? raw.replace(/^urn:entity:/, "").split(":")[0]! : "entity";
+}
+
+/** Exactly the query parameters sent to GET /v2/insights; the agent trace prints this same list. */
+export function buildInsightsParams(query: InsightQuery): URLSearchParams {
+  const params = new URLSearchParams({
+    "filter.type": `urn:entity:${query.targetType}`,
+    "signal.interests.entities": query.signalEntityIds.join(","),
+    "feature.explainability": "true",
+    // Qloo paginates insights with `take` (+ `page`); an unknown `limit` is ignored and the default page of 20 comes back.
+    take: String(query.take),
+  });
+  // Real API: book does not support trending requests (400), so bias.trends is skipped for it.
+  if (query.targetType !== "book") params.set("bias.trends", query.biasTrends);
+  if (query.excludeEntityIds.length) params.set("filter.exclude.entities", query.excludeEntityIds.join(","));
+  if (query.city) params.set("filter.location.query", query.city);
+  if (query.popularityMin !== undefined) params.set("filter.popularity.min", String(query.popularityMin));
+  if (query.popularityMax !== undefined) params.set("filter.popularity.max", String(query.popularityMax));
+  return params;
+}
+
 function extractTags(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value
@@ -62,27 +93,14 @@ export class HttpQlooClient implements QlooClient {
       return [{
         id,
         name,
-        type: stringValue(row.type, properties.type) ?? "entity",
+        type: entityType(row, properties),
         tags: extractTags(row.tags ?? properties.tags),
       }];
     });
   }
 
   async insights(query: InsightQuery): Promise<QlooInsight[]> {
-    const params = new URLSearchParams({
-      "filter.type": `urn:entity:${query.targetType}`,
-      "signal.interests.entities": query.signalEntityIds.join(","),
-      "feature.explainability": "true",
-      limit: String(query.limit),
-    });
-    // Real API: book does not support trending requests (400), so bias.trends is skipped for it.
-    if (query.targetType !== "book") params.set("bias.trends", query.biasTrends);
-    if (query.excludeEntityIds.length) params.set("filter.exclude.entities", query.excludeEntityIds.join(","));
-    if (query.city) params.set("filter.location.query", query.city);
-    if (query.popularityMin !== undefined) params.set("filter.popularity.min", String(query.popularityMin));
-    if (query.popularityMax !== undefined) params.set("filter.popularity.max", String(query.popularityMax));
-
-    const payload = await this.get("/v2/insights", params);
+    const payload = await this.get("/v2/insights", buildInsightsParams(query));
     const rows = arrayAt(payload, [["results", "entities"], ["results"], ["data", "entities"], ["data"]]);
     return rows.flatMap((row): QlooInsight[] => {
       if (!isObject(row)) return [];

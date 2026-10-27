@@ -6,7 +6,7 @@ The idea responds to a recurring frustration: people describe Spotify recommenda
 
 ## Quick start
 
-Node.js 20 or newer is required. No environment variables are needed for the complete mock experience.
+Node.js 20 or newer is required. The live site at <https://outofbubble.onrender.com> runs on real Qloo data. Locally, without `QLOO_API_KEY`, the app runs in mock mode on hand-written fictional fixtures, so you can develop and run the tests with no environment variables at all.
 
 ```bash
 npm install
@@ -14,7 +14,7 @@ npm test
 npm start
 ```
 
-Open <http://localhost:3000>. The first fictional sample mix loads automatically. Click **Start over** to see the three empty-state examples.
+Open <http://localhost:3000>. In mock mode the first example mix loads automatically with fictional results (the badge reads "Sample data"). Click **Start over** to see the three empty-state examples.
 
 The deployed app is live at <https://outofbubble.onrender.com>. It runs on Render Free, so the first request after an idle period can take 50 seconds or more while the service wakes up. The page shows a wake-up notice, checks server health, and offers a retry if a request reaches the 25-second client timeout.
 
@@ -80,7 +80,7 @@ The Express server serves the API and the compiled vanilla TypeScript single pag
 ### API routes
 
 - `POST /api/resolve` resolves interest names into entity IDs.
-- `POST /api/discover` resolves inputs, maps discovery distance to Qloo controls, requests explainable insights, and returns 8–10 cards.
+- `POST /api/discover` resolves inputs, maps discovery distance to Qloo controls, requests explainable insights (`take=10`), and returns up to 10 cards.
 - `POST /api/exclude` excludes a known card plus the visible result set and refills with a fresh result.
 
 ## Why Qloo is load-bearing
@@ -128,11 +128,23 @@ The health check is `GET /api/health`.
 
 ## Screenshots
 
-Captured from the mock-mode build during local browser QA:
+Captured from the live deployment (https://outofbubble.onrender.com, real Qloo data, 1280x800 dark theme).
 
-![Desktop discovery results](docs/screenshots/desktop-results.png)
+![Empty state with three example prompts](docs/screenshots/01_empty.png)
 
-![Mobile discovery flow](docs/screenshots/mobile-results.png)
+*Empty state: three clickable example mixes (film + book + game to artists, and two more).*
+
+![Live results](docs/screenshots/02_results.png)
+
+*Blade Runner 2049 + The Left Hand of Darkness + Disco Elysium, target artists, "Out of the bubble": 10 live Qloo results, each with "Because of" chips.*
+
+![How the agent thought](docs/screenshots/03_trace.png)
+
+*The "How the agent thought" panel: resolved Qloo entity IDs, the exact `/v2/insights` parameters sent (including `take=10`), the count Qloo returned, and `explainability.present=10/10`.*
+
+![Mobile results](docs/screenshots/04_mobile.png)
+
+*Same query at 390x844: single-column cards.*
 
 ## License
 

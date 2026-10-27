@@ -1,6 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { DiscoveryAgent, buildExplanation, normalizeInterestNames, validateDiscoverInput } from "./agent.js";
 import { distanceProfile } from "./distance.js";
+import { HttpQlooClient } from "./http-qloo-client.js";
 import { MockQlooClient } from "./mock-qloo-client.js";
 import type { QlooInsight, ResolvedEntity } from "./types.js";
 
@@ -56,9 +57,52 @@ describe("mock Qloo client", () => {
 
   it("honors exclusions in insights", async () => {
     const client = new MockQlooClient();
-    const first = await client.insights({ targetType: "artist", signalEntityIds: ["mock:blade-runner-2049"], excludeEntityIds: [], limit: 2, biasTrends: "low", diversifyBy: "tags", explainability: true });
-    const second = await client.insights({ targetType: "artist", signalEntityIds: ["mock:blade-runner-2049"], excludeEntityIds: [first[0]!.id], limit: 2, biasTrends: "low", diversifyBy: "tags", explainability: true });
+    const first = await client.insights({ targetType: "artist", signalEntityIds: ["mock:blade-runner-2049"], excludeEntityIds: [], take: 2, biasTrends: "low", diversifyBy: "tags", explainability: true });
+    const second = await client.insights({ targetType: "artist", signalEntityIds: ["mock:blade-runner-2049"], excludeEntityIds: [first[0]!.id], take: 2, biasTrends: "low", diversifyBy: "tags", explainability: true });
     expect(second.map((item) => item.id)).not.toContain(first[0]!.id);
+  });
+});
+
+describe("http Qloo client", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("resolves by best name match, parses the URN type, and leaves unrelated hits unresolved", async () => {
+    const hits: Record<string, unknown[]> = {
+      "The Left Hand of Darkness": [
+        { entity_id: "junk", name: "NNNKS Competent Careers Pvt.Ltd.", types: ["urn:entity:brand"] },
+        { entity_id: "lhod", name: "The Left Hand of Darkness", types: ["urn:entity:book"], subtype: "urn:entity:book" },
+      ],
+      "Blade Runner 2049": [{ entity_id: "br", name: "Blade Runner 2049", types: ["urn:entity:movie"] }],
+      "Zzyzx Nonexistent Book": [
+        { entity_id: "b1", name: "Book", types: ["urn:entity:brand"] },
+        { entity_id: "b2", name: "Zyzzyva Press", types: ["urn:entity:brand"] },
+      ],
+    };
+    vi.stubGlobal("fetch", async (url: string) => {
+      const parsed = new URL(url);
+      const body = parsed.pathname === "/search" ? { results: hits[parsed.searchParams.get("query") ?? ""] ?? [] } : { results: { entities: [] } };
+      return new Response(JSON.stringify(body), { status: 200 });
+    });
+    const result = await new DiscoveryAgent(new HttpQlooClient("test-key"), noOneLiners).discover({
+      ...baseInput,
+      interests: ["The Left Hand of Darkness", "Blade Runner 2049", "Zzyzx Nonexistent Book"],
+    });
+    expect(result.resolved.map((entity) => [entity.id, entity.type])).toEqual([["lhod", "book"], ["br", "movie"]]);
+    expect(result.unresolved).toEqual(["Zzyzx Nonexistent Book"]);
+    expect(result.trace[0]?.detail).toContain("The Left Hand of Darkness → book · lhod");
+    expect(result.trace[0]?.detail).toContain("Zzyzx Nonexistent Book → not found");
+  });
+
+  it("pages insights with take, not limit", async () => {
+    const urls: string[] = [];
+    vi.stubGlobal("fetch", async (url: string) => {
+      urls.push(url);
+      return new Response(JSON.stringify({ results: { entities: [] } }), { status: 200 });
+    });
+    await new HttpQlooClient("test-key").insights({ targetType: "artist", signalEntityIds: ["a"], excludeEntityIds: [], take: 10, biasTrends: "low", diversifyBy: "tags", explainability: true });
+    const params = new URL(urls[0]!).searchParams;
+    expect(params.get("take")).toBe("10");
+    expect(params.has("limit")).toBe(false);
   });
 });
 
@@ -85,15 +129,19 @@ describe("explanation rendering", () => {
 });
 
 describe("agent loop", () => {
-  it("returns eight cards with honest explainability flags and a three-step trace", async () => {
+  it("returns ten cards with honest explainability flags and a three-step trace", async () => {
     const result = await new DiscoveryAgent(new MockQlooClient(), noOneLiners).discover(baseInput);
-    expect(result.recommendations).toHaveLength(8);
+    expect(result.recommendations).toHaveLength(10);
     expect(result.recommendations.every((item) => item.explainabilityPresent === (item.becauseOf.length > 0))).toBe(true);
     expect(result.trace.map((item) => item.stage)).toEqual(["resolve", "discover", "explain"]);
     expect(result.trace[0]?.detail).toContain("Blade Runner 2049 → movie · mock:blade-runner-2049");
     expect(result.trace[1]?.detail).toContain("signal.interests.entities=mock:blade-runner-2049,mock:left-hand-darkness,mock:disco-elysium");
     expect(result.trace[1]?.detail).toContain("feature.explainability=true");
-    expect(result.trace[2]?.detail).toContain("result.count=8");
+    expect(result.trace[1]?.detail).toContain("take=10");
+    expect(result.trace[1]?.detail).not.toContain("limit=");
+    expect(result.trace[1]?.detail).not.toContain("diversify.by");
+    expect(result.trace[1]?.detail).toContain("qloo.returned=10");
+    expect(result.trace[2]?.detail).toContain("result.count=10");
     expect(result.mode).toBe("mock");
   });
 
@@ -124,11 +172,11 @@ describe("agent loop", () => {
     expect(result.error).toMatch(/None/);
   });
 
-  it("changes at least four of eight cards between adjacent distance stops", async () => {
+  it("changes at least four of ten cards between adjacent distance stops", async () => {
     const agent = new DiscoveryAgent(new MockQlooClient(), noOneLiners);
     const sets = await Promise.all(([0, 1, 2] as const).map(async (value) =>
       new Set((await agent.discover({ ...baseInput, distance: value })).recommendations.map((item) => item.id))));
-    const changed = (left: Set<string>, right: Set<string>) => 8 - [...left].filter((id) => right.has(id)).length;
+    const changed = (left: Set<string>, right: Set<string>) => left.size - [...left].filter((id) => right.has(id)).length;
     expect(changed(sets[0], sets[1])).toBeGreaterThanOrEqual(4);
     expect(changed(sets[1], sets[2])).toBeGreaterThanOrEqual(4);
   });
@@ -140,7 +188,7 @@ describe("agent loop", () => {
       targetType,
       signalEntityIds: ["mock:blade-runner-2049"],
       excludeEntityIds: [],
-      limit: 12,
+      take: 12,
       biasTrends: "low",
       diversifyBy: "tags",
       popularityMin: 0.08,

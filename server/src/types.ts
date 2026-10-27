@@ -22,7 +22,8 @@ export interface InsightQuery {
   targetType: TargetType;
   signalEntityIds: string[];
   excludeEntityIds: string[];
-  limit: number;
+  /** Qloo /v2/insights page size (`take`). Qloo ignores `limit`. */
+  take: number;
   city?: string;
   biasTrends: "low" | "high";
   diversifyBy: "entities" | "tags";

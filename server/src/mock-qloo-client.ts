@@ -66,7 +66,7 @@ export class MockQlooClient implements QlooClient {
       ranked = [...candidates].sort((a, b) =>
         b.item.popularity - a.item.popularity || b.item.trend - a.item.trend || b.affinity - a.affinity || a.originalIndex - b.originalIndex);
     }
-    ranked = ranked.slice(0, query.limit);
+    ranked = ranked.slice(0, query.take);
 
     return ranked.map(({ item }) => {
       const sources = signals.filter((entity) => entity.tags.some((tag) => item.affinityTags.includes(tag)));
