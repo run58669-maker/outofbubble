@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { DiscoveryAgent } from "./agent.js";
 import { DiscoverCache, discoverCacheKey } from "./discover-cache.js";
 import { UpstreamError } from "./errors.js";
-import { createApp, type AppOptions } from "./index.js";
+import { API_RATE_LIMIT, BUSY_MESSAGE, createApp, type AppOptions } from "./index.js";
 import { MockQlooClient } from "./mock-qloo-client.js";
 import { SlidingWindowLimiter } from "./rate-limit.js";
 import type { QlooClient } from "./types.js";
@@ -27,9 +27,9 @@ async function start(client: QlooClient = new MockQlooClient(), options: AppOpti
   server = createApp(new DiscoveryAgent(client, noOneLiners), options).listen(0);
   await new Promise((resolve) => server!.once("listening", resolve));
   const base = `http://127.0.0.1:${(server!.address() as AddressInfo).port}`;
-  return (path: string, body?: unknown, raw?: string) => fetch(`${base}${path}`, body === undefined && raw === undefined
-    ? {}
-    : { method: "POST", headers: { "Content-Type": "application/json" }, body: raw ?? JSON.stringify(body) });
+  return (path: string, body?: unknown, raw?: string, headers: Record<string, string> = {}) => fetch(`${base}${path}`, body === undefined && raw === undefined
+    ? { headers }
+    : { method: "POST", headers: { "Content-Type": "application/json", ...headers }, body: raw ?? JSON.stringify(body) });
 }
 
 describe("sliding-window rate limiter", () => {
@@ -52,6 +52,35 @@ describe("sliding-window rate limiter", () => {
     expect(limited.headers.get("retry-after")).toBeTruthy();
     expect((await limited.json()).error).toMatch(/^Too many requests/);
     for (let index = 0; index < 4; index += 1) expect((await call("/api/health")).status).toBe(200);
+  });
+});
+
+describe("rate limit behind a proxy", () => {
+  it("keys on the first X-Forwarded-For entry: the 21st request from one client gets 429, even if all were 400s", async () => {
+    const lines: string[] = [];
+    const call = await start(undefined, { rateLimit: { ...API_RATE_LIMIT, log: (line) => lines.push(line) } });
+    // Render-style chain: client, then edge proxies that differ per request.
+    const statuses: number[] = [];
+    for (let index = 0; index < 21; index += 1) {
+      const response = await call("/api/discover", { bad: true }, undefined, { "X-Forwarded-For": `203.0.113.7, 10.0.0.${index}` });
+      statuses.push(response.status);
+    }
+    expect(statuses.slice(0, 20).every((status) => status === 400)).toBe(true);
+    expect(statuses[20]).toBe(429);
+    // Another client is unaffected; the key was logged once (not per request).
+    expect((await call("/api/discover", { bad: true }, undefined, { "X-Forwarded-For": "198.51.100.2" })).status).toBe(400);
+    expect(lines).toEqual(["[rate-limit] key=203.0.113.7 xff-hops=2 req.ip=10.0.0.0"]);
+  });
+
+  it("caps Qloo-hitting requests across all clients with a 503 busy message", async () => {
+    const call = await start(undefined, { rateLimit: { max: 1000, windowMs: 60_000, log: () => {} }, globalLimit: { max: 3, windowMs: 60_000 } });
+    const statuses: number[] = [];
+    for (let index = 0; index < 4; index += 1) {
+      statuses.push((await call("/api/resolve", { interests: ["Hades"] }, undefined, { "X-Forwarded-For": `198.51.100.${index}` })).status);
+    }
+    expect(statuses).toEqual([200, 200, 200, 503]);
+    const busy = await call("/api/resolve", { interests: ["Hades"] }, undefined, { "X-Forwarded-For": "198.51.100.99" });
+    expect(await busy.json()).toEqual({ error: BUSY_MESSAGE });
   });
 });
 

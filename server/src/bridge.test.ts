@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { BRIDGE_TAKE, DiscoveryAgent, pickCardsToDrop, sharedTags } from "./agent.js";
+import { BRIDGE_TAKE, DiscoveryAgent, bridgeMinShared, pickCardsToDrop, sharedTags } from "./agent.js";
 import { HttpQlooClient, decodeEntities } from "./http-qloo-client.js";
 import { MockQlooClient } from "./mock-qloo-client.js";
 import type { InsightQuery, QlooClient, QlooInsight, ResolvedEntity } from "./types.js";
@@ -31,7 +31,7 @@ describe("taste bridge", () => {
     const result = await new DiscoveryAgent(new MockQlooClient(), noOneLiners).discover(example02);
     const bridge = result.trace.find((step) => step.stage === "bridge")?.detail ?? "";
     expect(bridge.split("\n")[0]).toBe("Decision: Braiding Sweetgrass was cited by 0/10 → fetched 2 candidates seeded with it; "
-      + "1 passed the relevance gate (shared tags ≥ 2 with your other interests: \"Moss Courtyard\" 3); merged 1, replaced 1");
+      + "1 passed the relevance gate (seed ≥ 1 and others ≥ 2 of 6: \"Moss Courtyard\": seed 1 · others 3/6 (min 2)); merged 1, replaced 1");
     expect(bridge).toContain("signal.interests.entities=mock:braiding-sweetgrass\n");
     expect(bridge).toContain(`take=${BRIDGE_TAKE}`);
     expect(BRIDGE_TAKE).toBe(8);
@@ -60,7 +60,7 @@ describe("taste bridge", () => {
     const result = await new DiscoveryAgent(new MockQlooClient(), noOneLiners).discover({ ...example02, distance: 1 });
     const bridge = result.trace.find((step) => step.stage === "bridge")?.detail ?? "";
     expect(bridge.split("\n")[0]).toMatch(
-      /^Decision: Patagonia was cited by 0\/10 → fetched 5 candidates seeded with it; 0 passed the relevance gate \(shared tags ≥ 2 with your other interests; best: .*\); kept first query$/,
+      /^Decision: Patagonia was cited by 0\/10 → fetched 5 candidates seeded with it; 0 passed the relevance gate \(seed ≥ 1 and others ≥ 2 of 6; best: .*\); kept first query$/,
     );
     expect(result.bridge).toEqual({ input: "Patagonia", candidates: 5, passed: 0, merged: 0 });
     expect(result.recommendations.some((item) => item.bridgedFrom)).toBe(false);
@@ -78,7 +78,7 @@ describe("taste bridge", () => {
         if (query.signalEntityIds.length === 1) {
           return ["p1", "p2", "p3", "p4"].map((id, index) => ({
             id, name: id.toUpperCase(), type: "artist", description: "", affinitySourceIds: [query.signalEntityIds[0]!],
-            affinitySourceNames: [], affinity: 0.9 - index / 10, tags: ["Noir", "Rain"],
+            affinitySourceNames: [], affinity: 0.9 - index / 10, tags: ["Noir", "Rain", "Solo"],
           })).concat([{ id: "junk", name: "JUNK", type: "artist", description: "", affinitySourceIds: [], affinitySourceNames: [],
             affinity: 0.99, tags: ["18-24", "audiobook", "noir"] }]);
         }
@@ -100,6 +100,34 @@ describe("taste bridge", () => {
     const again = await agent.discover({ ...input, interests: first.resolved.map(({ id, name, type }) => ({ id, name, type })) });
     expect(searches).toBe(0);
     expect(again.bridge?.merged).toBe(3);
+  });
+
+  it("rejects candidates that fit the other inputs but not the seed, and scales the bar with the union size", async () => {
+    expect(bridgeMinShared(6)).toBe(2);
+    expect(bridgeMinShared(322)).toBe(7);
+    // Twin Peaks + Kind of Blue + Aesop: murder-mystery books match Twin Peaks richly but share nothing with the album.
+    const tags: Record<string, string[]> = {
+      "Twin Peaks": ["murder", "mystery", "small town", "surreal", "detective"],
+      "Kind of Blue": ["jazz", "modal", "cool"],
+      Aesop: ["fable", "moral", "animals"],
+    };
+    const fake: QlooClient = {
+      mode: "mock",
+      search: async (name) => [{ id: `id:${name}`, name, type: "movie", tags: tags[name] ?? [] }],
+      insights: async (query) => query.signalEntityIds.length === 1
+        ? [
+          { id: "m1", name: "Mystery One", type: "book", description: "", affinitySourceIds: [], affinitySourceNames: [], affinity: 0.9, tags: ["Murder", "Mystery", "Detective", "Fable"] },
+          { id: "j1", name: "Jazz Diary", type: "book", description: "", affinitySourceIds: [], affinitySourceNames: [], affinity: 0.5, tags: ["Jazz", "Surreal"] },
+        ]
+        : Array.from({ length: 10 }, (_, index) => ({ id: `r${index}`, name: `R${index}`, type: "book", description: "",
+          affinitySourceIds: ["id:Twin Peaks", "id:Aesop"], affinitySourceNames: [], affinity: index / 10 })),
+    };
+    const result = await new DiscoveryAgent(fake, noOneLiners).discover({ interests: ["Twin Peaks", "Kind of Blue", "Aesop"], targetType: "book", distance: 0 });
+    const line = result.trace.find((step) => step.stage === "bridge")?.detail.split("\n")[0];
+    // Mystery One: others 4 but seed 0 → out. Jazz Diary: seed 1 but others 1 < 2 → out.
+    expect(line).toBe("Decision: Kind of Blue was cited by 0/10 → fetched 2 candidates seeded with it; 0 passed the relevance gate "
+      + "(seed ≥ 1 and others ≥ 2 of 8; best: \"Mystery One\": seed 0 · others 4/8 (min 2), \"Jazz Diary\": seed 1 · others 1/8 (min 2)); kept first query");
+    expect(result.recommendations.some((item) => item.bridgedFrom)).toBe(false);
   });
 
   it("drops the lowest-affinity cards but never an input's only citation", () => {

@@ -35,8 +35,19 @@ const POPULARITY_NOTCH = 0.15;
 const POPULARITY_CEILING = 0.96;
 /** Page size of the one extra taste-bridge query seeded with an uncited input alone: a candidate pool, not results. */
 export const BRIDGE_TAKE = 8;
-/** A bridge candidate must share at least this many Qloo tags with the union of the user's OTHER inputs. */
+/**
+ * Relevance gate (thresholds set on 2026-10-27 live runs): a candidate must share >= BRIDGE_MIN_SEED_TAGS tags with
+ * the seed input itself AND >= max(BRIDGE_MIN_SHARED_TAGS, ceil(BRIDGE_SHARED_SHARE x union size)) tags with the union
+ * of the user's OTHER inputs' tags (that union runs to ~300 tags live, so a flat 2 let everything through).
+ */
+export const BRIDGE_MIN_SEED_TAGS = 1;
 export const BRIDGE_MIN_SHARED_TAGS = 2;
+export const BRIDGE_SHARED_SHARE = 0.02;
+
+/** Minimum tags a candidate must share with the other inputs' tag union of `unionSize`. */
+export function bridgeMinShared(unionSize: number): number {
+  return Math.max(BRIDGE_MIN_SHARED_TAGS, Math.ceil(BRIDGE_SHARED_SHARE * unionSize));
+}
 /** At most this many bridge candidates replace first-query cards. */
 export const BRIDGE_MAX_MERGE = 3;
 /** Tags that say nothing about taste (formats, platforms, audience age brackets) never count as shared. */
@@ -446,8 +457,8 @@ export class DiscoveryAgent {
   /**
    * The agent's taste decision. Count how many cards cite each input. If one input is cited by none, run ONE extra
    * /v2/insights call seeded with that input alone (same type and distance parameters, take=8) as a *candidate pool*.
-   * A candidate is merged only if it shares >= BRIDGE_MIN_SHARED_TAGS Qloo tags with the union of the user's OTHER
-   * inputs' tags (affinity, then popularity, break ties); at most BRIDGE_MAX_MERGE merge, each replacing the
+   * A candidate is merged only if it shares >= 1 tag with the seed itself AND >= bridgeMinShared(union) tags with the
+   * union of the user's OTHER inputs' tags (ranked by the latter, then affinity); at most BRIDGE_MAX_MERGE merge, each replacing the
    * lowest-affinity first-query card that is not some input's only citation. No passing candidate → nothing merges.
    */
   private async tasteBridge(
@@ -484,20 +495,23 @@ export class DiscoveryAgent {
     const seen = new Set(insights.map((insight) => insight.id));
     const candidates = extra.filter((insight) => !seen.has(insight.id) && (seen.add(insight.id), true));
 
-    // Relevance gate: shared tags with the union of the OTHER inputs' tags.
+    // Relevance gate: (i) the candidate must represent the seed (shares its tags) and (ii) fit the OTHER inputs.
+    const keys = (tags: string[]) => new Set(tags.flatMap((tag) => tagKey(tag) ?? []));
+    const seedTags = keys(await this.tagsOf(target));
     const others = resolved.filter((entity) => entity.id !== target.id);
-    const otherTags = new Set((await Promise.all(others.map((entity) => this.tagsOf(entity))))
-      .flat().flatMap((tag) => tagKey(tag) ?? []));
+    const otherTags = keys((await Promise.all(others.map((entity) => this.tagsOf(entity)))).flat());
+    const minShared = bridgeMinShared(otherTags.size);
     const scored = candidates
-      .map((insight, index) => ({ insight, index, shared: sharedTags(insight.tags, otherTags) }))
+      .map((insight, index) => ({ insight, index, seed: sharedTags(insight.tags, seedTags), shared: sharedTags(insight.tags, otherTags) }))
       .sort((a, b) => b.shared.length - a.shared.length
         || (affinityOf(b.insight) ?? -Infinity) - (affinityOf(a.insight) ?? -Infinity)
         || (b.insight.popularity ?? -Infinity) - (a.insight.popularity ?? -Infinity)
         || a.index - b.index);
-    const passed = scored.filter((entry) => entry.shared.length >= BRIDGE_MIN_SHARED_TAGS);
+    const passed = scored.filter((entry) => entry.seed.length >= BRIDGE_MIN_SEED_TAGS && entry.shared.length >= minShared);
     const fetched = `→ fetched ${candidates.length} candidate${candidates.length === 1 ? "" : "s"} seeded with it`;
-    const gate = `shared tags ≥ ${BRIDGE_MIN_SHARED_TAGS} with your other interests`;
-    const quote = (entries: typeof scored) => entries.map((entry) => `"${entry.insight.name}" ${entry.shared.length}`).join(", ");
+    const gate = `seed ≥ ${BRIDGE_MIN_SEED_TAGS} and others ≥ ${minShared} of ${otherTags.size}`;
+    const quote = (entries: typeof scored) => entries
+      .map((entry) => `"${entry.insight.name}": seed ${entry.seed.length} · others ${entry.shared.length}/${otherTags.size} (min ${minShared})`).join(", ");
     const params = `\n${formatInsightsQuery(bridgeQuery)}\nqloo.returned=${extra.length}\nother inputs' tags=${otherTags.size}`;
 
     // Room: a short first page takes candidates without dropping anything; otherwise replace the weakest cards.
@@ -507,13 +521,13 @@ export class DiscoveryAgent {
     const merging = passed.slice(0, Math.min(wanted, room + dropped.size));
     const ran = { input: target.name, candidates: candidates.length, passed: passed.length, merged: merging.length };
     if (!merging.length) {
-      const best = scored.slice(0, 2).filter((entry) => entry.shared.length > 0);
+      const best = scored.slice(0, 2).filter((entry) => entry.shared.length + entry.seed.length > 0);
       const why = passed.length
         ? `${passed.length} passed the relevance gate (${gate}: ${quote(passed)}) but every first-query card is an input's only citation`
         : `0 passed the relevance gate (${gate}${best.length ? `; best: ${quote(best)}` : ""})`;
       return { ...none, ran, detail: `${head} ${fetched}; ${why}; kept first query${also}${params}` };
     }
-    const tagLines = merging.map((entry) => `"${entry.insight.name}" shares: ${entry.shared.join(", ")}`).join("\n");
+    const tagLines = merging.map((entry) => `"${entry.insight.name}" seed: ${entry.seed.join(", ")} · others: ${entry.shared.join(", ")}`).join("\n");
     return {
       insights: [...insights.filter((insight) => !dropped.has(insight.id)), ...merging.map((entry) => entry.insight)],
       ran,

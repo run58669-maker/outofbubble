@@ -6,12 +6,15 @@ import { DiscoverCache, discoverCacheKey } from "./discover-cache.js";
 import { InputError, UpstreamError } from "./errors.js";
 import { HttpQlooClient, QlooHttpError } from "./http-qloo-client.js";
 import { MockQlooClient } from "./mock-qloo-client.js";
-import { rateLimit, type RateLimitOptions } from "./rate-limit.js";
+import { SlidingWindowLimiter, rateLimit, type RateLimitOptions } from "./rate-limit.js";
 import { ENTITY_TYPES, type DiscoverInput, type InterestInput, type TargetType } from "./types.js";
 
 /** Route-layer input caps (checked before anything reaches the agent or Qloo). */
 export const LIMITS = { interests: 10, name: 100, id: 64, city: 100, ids: 50 } as const;
 export const API_RATE_LIMIT: RateLimitOptions = { max: 20, windowMs: 60_000 };
+/** Across ALL clients: Qloo-hitting requests per minute (cache hits do not count). Guards the quota against a spread-out scrape. */
+export const GLOBAL_QLOO_LIMIT: RateLimitOptions = { max: 120, windowMs: 60_000 };
+export const BUSY_MESSAGE = "The app is busy right now, try again in a minute";
 
 function bodyOf(request: Request): Record<string, unknown> {
   return typeof request.body === "object" && request.body !== null ? request.body as Record<string, unknown> : {};
@@ -64,7 +67,8 @@ function bodyToInput(body: Record<string, unknown>): DiscoverInput {
 }
 
 export interface AppOptions {
-  rateLimit?: RateLimitOptions;
+  rateLimit?: RateLimitOptions & { log?: (line: string) => void };
+  globalLimit?: RateLimitOptions;
   cache?: DiscoverCache;
 }
 
@@ -74,15 +78,21 @@ export function createApp(
 ) {
   const app = express();
   const cache = options.cache ?? new DiscoverCache();
+  const globalLimiter = new SlidingWindowLimiter(options.globalLimit ?? GLOBAL_QLOO_LIMIT);
+  /** Call right before work that may reach Qloo. */
+  const guardQloo = () => {
+    if (!globalLimiter.hit("global").allowed) throw new UpstreamError(BUSY_MESSAGE, 503);
+  };
   app.disable("x-powered-by");
-  // Render terminates TLS in front of us: trust exactly one proxy hop so req.ip is the client, not the proxy.
+  // Render terminates TLS in front of us. The limiter keys on the first X-Forwarded-For entry (see clientKey).
   app.set("trust proxy", 1);
   app.use("/api", (_request, response, next) => {
     response.setHeader("Cache-Control", "no-store");
     next();
   });
   app.get("/api/health", (_request, response) => response.json({ ok: true, mode: agent.mode }));
-  // Health polling during a cold start is exempt; every other /api route counts toward the per-IP limit.
+  // Health polling during a cold start is exempt; every other /api request counts toward the per-client limit,
+  // including ones that end in 400/413 (the limiter runs before body parsing and validation).
   app.use("/api", rateLimit(options.rateLimit ?? API_RATE_LIMIT));
   app.use(express.json({ limit: "32kb" }));
 
@@ -90,7 +100,9 @@ export function createApp(
     try {
       const body = bodyOf(request);
       // `alternatives: true` also returns up to three other close matches per input (the type-chip picker).
-      const { matches } = await agent.resolveMatches(interestsFrom(body.interests), body.alternatives === true);
+      const interests = interestsFrom(body.interests);
+      guardQloo();
+      const { matches } = await agent.resolveMatches(interests, body.alternatives === true);
       response.json({ resolved: matches.flatMap((match) => (match.entity ? [match.entity] : [])), matches });
     } catch (error) { next(error); }
   });
@@ -104,6 +116,7 @@ export function createApp(
         response.json(cached);
         return;
       }
+      guardQloo();
       const result = await agent.discover(input);
       cache.set(key, result);
       response.json(result);
@@ -117,7 +130,9 @@ export function createApp(
       const knownId = body.knownId;
       if (typeof knownId !== "string" || !knownId) throw new InputError("knownId is required.");
       if (knownId.length > LIMITS.id) throw new InputError(`knownId must be at most ${LIMITS.id} characters.`);
-      response.json(await agent.refill(bodyToInput(body), currentIds, knownId));
+      const input = bodyToInput(body);
+      guardQloo();
+      response.json(await agent.refill(input, currentIds, knownId));
     } catch (error) { next(error); }
   });
 

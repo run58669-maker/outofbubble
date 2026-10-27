@@ -38,11 +38,32 @@ export class SlidingWindowLimiter {
   }
 }
 
-/** Express middleware: per-IP limit. Needs `trust proxy` behind Render's proxy so `req.ip` is the client address. */
-export function rateLimit(options: RateLimitOptions) {
+/**
+ * Client key: the FIRST `X-Forwarded-For` entry (the original client as Render's edge saw it), else the socket address.
+ * `req.ip` with `trust proxy=1` is the LAST hop, which on Render can be a rotating edge/proxy address, so every request
+ * got a fresh key and nothing was ever limited. XFF can be spoofed by the caller; the global cap in index.ts covers that.
+ */
+export function clientKey(request: Request): string {
+  const forwarded = request.headers["x-forwarded-for"];
+  const first = (Array.isArray(forwarded) ? forwarded[0] : forwarded)?.split(",")[0]?.trim();
+  return (first || request.socket.remoteAddress || "unknown").slice(0, 64);
+}
+
+/** Express middleware: per-client limit (one store for the app's lifetime), counting every request that reaches it. */
+export function rateLimit(options: RateLimitOptions & { log?: (line: string) => void }) {
   const limiter = new SlidingWindowLimiter(options);
+  const now = options.now ?? Date.now;
+  const log = options.log ?? ((line: string) => console.log(line));
+  let lastLog = -Infinity;
   return (request: Request, response: Response, next: NextFunction) => {
-    const { allowed, retryAfterSeconds } = limiter.hit(request.ip ?? "unknown");
+    const key = clientKey(request);
+    // At most one log line per minute, so Render logs show which key the limiter actually sees.
+    if (now() - lastLog >= 60_000) {
+      lastLog = now();
+      const hops = String(request.headers["x-forwarded-for"] ?? "").split(",").filter(Boolean).length;
+      log(`[rate-limit] key=${key} xff-hops=${hops} req.ip=${request.ip ?? "?"}`);
+    }
+    const { allowed, retryAfterSeconds } = limiter.hit(key);
     if (allowed) return next();
     response.setHeader("Retry-After", String(retryAfterSeconds));
     response.status(429).json({ error: `Too many requests. Try again in ${retryAfterSeconds} s.` });
