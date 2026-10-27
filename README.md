@@ -14,9 +14,9 @@ npm test
 npm start
 ```
 
-Open <http://localhost:3000>. In mock mode the first example mix loads automatically with fictional results (the badge reads "Sample data"). Click **Start over** to see the three empty-state examples.
+Open <http://localhost:3000>. In mock mode the first example mix loads automatically with fictional results (the badge reads "Sample data"). The three examples are always one click away in a small row under the input; **Start over** shows the larger empty state.
 
-The deployed app is live at <https://outofbubble.onrender.com>. It runs on Render Free, so the first request after an idle period can take 50 seconds or more while the service wakes up. The page shows a wake-up notice, checks server health, and offers a retry if a request reaches the 25-second client timeout.
+The deployed app is live at <https://outofbubble.onrender.com>. It runs on Render Free, so the first request after an idle period can take 50 seconds or more while the service wakes up. The page shows a wake-up notice, checks server health, and offers a retry if a request reaches the 65-second client timeout.
 
 ## Switching to the real Qloo API
 
@@ -66,7 +66,7 @@ Browser
           │
           ▼
   DiscoveryAgent
-    Resolve → Discover → Decide → Explain → (exclude) Refill
+    Resolve → Discover → Decide → Taste bridge → Explain → (exclude) Refill
           │
           ├─ MockQlooClient (no QLOO_API_KEY)
           └─ HttpQlooClient (QLOO_API_KEY present)
@@ -76,6 +76,10 @@ Browser
 ```
 
 The Express server serves the API and the compiled vanilla TypeScript single page. `server/src/agent.ts` owns the complete loop and produces an in-memory trace that appears under **How the agent thought**. The Qloo clients share one interface, so tests run entirely against deterministic, hand-written fictional fixtures.
+
+**Taste bridge.** After the first insights call the agent counts how many cards cite each input (Qloo explainability). If an input is cited by none (live, *The Left Hand of Darkness* gets 0 of 10 artist cards while the film and the game get 10 each), it runs one extra `/v2/insights` call seeded with that input alone (same type and distance parameters, `take=4`), merges those cards marked "Bridge from …", and drops the lowest-affinity first-page cards so the page stays at 10. The trace logs the decision either way, and a bar above the grid shows each input's share of the cards.
+
+**Resolved-id reuse.** Once inputs have resolved, refills, slider moves and picker switches send `{ id, name, type }` back, so the server skips `/search` and the trace says "reused 3 resolved ids". A refill's trace is appended under the original run instead of replacing it.
 
 ### API routes
 
@@ -115,7 +119,7 @@ Copy `.env.example` into your deployment environment or set variables directly. 
 
 ## Test coverage
 
-Vitest (39 tests in 3 files) covers the type-aware resolver and its 4xx fallback, the decision step, badge thresholds, distance mapping and result-set differences, validation, deduplication, unresolved inputs, honest explanation-source rendering, exclusion, refill, card count, target typing, trace stages, and slow-request UI thresholds. Tests never call Qloo or OpenAI.
+Vitest (46 tests in 4 files) covers the type-aware resolver and its 4xx fallback, the decision step, both taste-bridge branches and its drop rule, resolved-id reuse, HTML-entity decoding and picker dedupe, badge thresholds, distance mapping and result-set differences, validation, deduplication, unresolved inputs, honest explanation-source rendering, exclusion, refill, card count, target typing, trace stages, and slow-request UI thresholds. Tests never call Qloo or OpenAI.
 
 ## Deploy to Render
 
@@ -128,19 +132,19 @@ The health check is `GET /api/health`.
 
 ## Screenshots
 
-Captured from the live deployment (https://outofbubble.onrender.com, real Qloo data, 1280x800 dark theme).
+01 and 04 were captured from the live deployment (real Qloo data); 02 and 03 from local mock mode (fictional fixtures, "Sample data" badge) after the taste-bridge change. Dark theme.
 
 ![Empty state with three example prompts](docs/screenshots/01_empty.png)
 
 *Empty state: three clickable example mixes (film + book + game to artists, and two more).*
 
-![Live results](docs/screenshots/02_results.png)
+![Results with the taste-bridge bar](docs/screenshots/02_results.png)
 
-*Blade Runner 2049 + The Left Hand of Darkness + Disco Elysium, target artists, "Out of the bubble": 10 live Qloo results, each with every "Because of" source Qloo returned and a popularity badge (well known ≥ 0.85, familiar 0.6–0.85, deep cut < 0.6); input tokens show their matched type.*
+*Example 02 (Nausicaa + Braiding Sweetgrass + Patagonia → places in Kyoto) in mock mode. The taste-bridge bar shows each input's share of the 10 cards; Braiding Sweetgrass is flagged because no first-query card cited it, so the agent ran one extra query seeded with it alone. The example row under the input is always visible.*
 
 ![How the agent thought](docs/screenshots/03_trace.png)
 
-*The "How the agent thought" panel: resolved Qloo entity IDs, the exact `/v2/insights` parameters sent (including `take=10`), the count Qloo returned, the Decide line ("kept first query (10 results, 10/10 explained)"), and `explainability.present=10/10`.*
+*The trace after one refill: the full run (Resolve, Discover, the self-correction retry, Decide, the Taste bridge decision with its exact extra-query parameters, Explain), then the refill appended as its own sub-section, whose Resolve step reads "reused 3 resolved ids (no /search call)".*
 
 ![Mobile results](docs/screenshots/04_mobile.png)
 

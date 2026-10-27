@@ -151,7 +151,7 @@ describe("agent loop", () => {
     expect(result.recommendations).toHaveLength(10);
     expect(result.recommendations.every((item) => item.explainabilityPresent === (item.becauseOf.length > 0))).toBe(true);
     expect(result.recommendations.every((item) => item.badge !== "well known")).toBe(true);
-    expect(result.trace.map((item) => item.stage)).toEqual(["resolve", "discover", "decide", "explain"]);
+    expect(result.trace.map((item) => item.stage)).toEqual(["resolve", "discover", "decide", "bridge", "explain"]);
     expect(result.trace[2]?.detail).toMatch(/^Decision: kept first query \(10 results, \d+\/10 explained\)$/);
     expect(result.trace[0]?.detail).toContain("Blade Runner 2049 → movie · mock:blade-runner-2049");
     expect(result.trace[1]?.detail).toContain("signal.interests.entities=mock:blade-runner-2049,mock:left-hand-darkness,mock:disco-elysium");
@@ -160,7 +160,7 @@ describe("agent loop", () => {
     expect(result.trace[1]?.detail).not.toContain("limit=");
     expect(result.trace[1]?.detail).not.toContain("diversify.by");
     expect(result.trace[1]?.detail).toContain("qloo.returned=10");
-    expect(result.trace[3]?.detail).toContain("result.count=10");
+    expect(result.trace[4]?.detail).toContain("result.count=10");
     expect(result.mode).toBe("mock");
   });
 

@@ -166,7 +166,9 @@ describe("agent decision step", () => {
       },
     };
     const result = await new DiscoveryAgent(fake, noOneLiners).discover({ ...baseInput, interests: ["Alpha", "Beta", "Gamma"] });
-    expect(queries.map((query) => query.biasTrends)).toEqual(["low", undefined]);
+    // The third query is the taste bridge (Beta and Gamma are never cited), seeded with Beta alone.
+    expect(queries.map((query) => query.biasTrends)).toEqual(["low", undefined, undefined]);
+    expect(queries[2]).toMatchObject({ signalEntityIds: ["id:Beta"], take: 4 });
     expect(result.trace.find((step) => step.stage === "decide")?.detail)
       .toBe("Decision: dropped bias.trends=low and retried because only 2/10 results were explained (under 50%); kept the retry (10 results, 9/10 explained)");
   });

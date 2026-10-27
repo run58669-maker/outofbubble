@@ -9,25 +9,30 @@ import {
 
 type TargetType = "artist" | "book" | "podcast" | "movie" | "tv_show" | "video_game" | "place";
 type Distance = 0 | 1 | 2;
-type Recommendation = { id: string; title: string; type: TargetType; becauseOf: string[]; becauseOfScores?: Array<number | null>; distance: Distance; explanation: string; oneLiner?: string; artIndex: number; explainabilityPresent: boolean; popularity?: number; badge?: string };
+type Recommendation = { id: string; title: string; type: TargetType; becauseOf: string[]; becauseOfScores?: Array<number | null>; distance: Distance; explanation: string; oneLiner?: string; artIndex: number; explainabilityPresent: boolean; popularity?: number; badge?: string; bridgedFrom?: string; imageUrl?: string };
 type TraceStep = { stage: string; title: string; detail: string };
-type Entity = { id: string; name: string; type: string };
+type Entity = { id: string; name: string; type: string; disambiguation?: string };
 type Match = { interest: string; entity?: Entity; alternatives?: Entity[] };
-type DiscoveryResponse = { recommendations: Recommendation[]; trace: TraceStep[]; mode: "mock" | "http"; unresolved: string[]; matches?: Match[]; error?: string };
+type DiscoveryResponse = { recommendations: Recommendation[]; trace: TraceStep[]; mode: "mock" | "http"; unresolved: string[]; matches?: Match[]; resolved?: Entity[]; bridgedInput?: string; error?: string };
 /** One input: `type` is an explicit hint, `id` a match the user picked from the type-chip picker. */
 type Interest = { name: string; type?: string; id?: string };
 
-const examples: Array<{ label: string; interests: Interest[]; targetType: TargetType; city?: string }> = [
-  { label: "Blade Runner 2049 + The Left Hand of Darkness + Disco Elysium → artists", interests: [{ name: "Blade Runner 2049", type: "movie" }, { name: "The Left Hand of Darkness", type: "book" }, { name: "Disco Elysium", type: "video_game" }], targetType: "artist" },
-  { label: "Nausicaa (film) + Braiding Sweetgrass (book) + Patagonia (brand) → places in Kyoto", interests: [{ name: "Nausicaa", type: "movie" }, { name: "Braiding Sweetgrass", type: "book" }, { name: "Patagonia", type: "brand" }], targetType: "place", city: "Kyoto" },
-  { label: "Hades (game) + Hadestown (Broadway show) + Circe (book) → podcasts", interests: [{ name: "Hades", type: "video_game" }, { name: "Hadestown", type: "place" }, { name: "Circe", type: "book" }], targetType: "podcast" },
+const examples: Array<{ label: string; short: string; interests: Interest[]; targetType: TargetType; city?: string }> = [
+  { label: "Blade Runner 2049 + The Left Hand of Darkness + Disco Elysium → artists", short: "Blade Runner 2049 + Left Hand of Darkness + Disco Elysium → artists", interests: [{ name: "Blade Runner 2049", type: "movie" }, { name: "The Left Hand of Darkness", type: "book" }, { name: "Disco Elysium", type: "video_game" }], targetType: "artist" },
+  { label: "Nausicaa (film) + Braiding Sweetgrass (book) + Patagonia (brand) → places in Kyoto", short: "Nausicaa + Braiding Sweetgrass + Patagonia → Kyoto", interests: [{ name: "Nausicaa", type: "movie" }, { name: "Braiding Sweetgrass", type: "book" }, { name: "Patagonia", type: "brand" }], targetType: "place", city: "Kyoto" },
+  { label: "Hades (game) + Hadestown (Broadway show) + Circe (book) → podcasts", short: "Hades + Hadestown + Circe → podcasts", interests: [{ name: "Hades", type: "video_game" }, { name: "Hadestown", type: "place" }, { name: "Circe", type: "book" }], targetType: "podcast" },
 ];
 
 const distanceLabels = ["Next door", "Across town", "Out of the bubble"];
 let interests: Interest[] = examples[0].interests.map((item) => ({ ...item }));
 let recommendations: Recommendation[] = [];
 let excludedIds: string[] = [];
-let latestTrace: TraceStep[] = [];
+/** The full trace of the last discovery run; refills are appended below it, never replace it. */
+let baseTrace: TraceStep[] = [];
+let refillTraces: Array<{ label: string; steps: TraceStep[] }> = [];
+/** Resolved input names (Qloo's spelling) for the taste-bridge bar, and the input that needed the extra query. */
+let resolvedNames: string[] = [];
+let bridgedInput: string | undefined;
 let unresolvedNames = new Set<string>();
 /** Last resolution per input name (lowercase), from /api/discover or the picker. */
 let matchByName = new Map<string, Match>();
@@ -181,8 +186,14 @@ function addInterest() {
 }
 
 function applyMatches(response: DiscoveryResponse) {
-  unresolvedNames = new Set(response.unresolved.map((name) => name.toLocaleLowerCase()));
-  matchByName = new Map((response.matches ?? []).map((match) => [match.interest.toLocaleLowerCase(), match]));
+  const matches = response.matches ?? [];
+  // Matches come back in input order. A re-run sends Qloo's own name for a reused id, so key by the user's input
+  // (same position) rather than by the name the server echoes back.
+  const sameShape = matches.length === interests.length;
+  const keyFor = (match: Match, index: number) => (sameShape ? interests[index]!.name : match.interest).toLocaleLowerCase();
+  unresolvedNames = new Set(matches.flatMap((match, index) => (match.entity ? [] : [keyFor(match, index)])));
+  for (const name of response.unresolved) if (!sameShape) unresolvedNames.add(name.toLocaleLowerCase());
+  matchByName = new Map(matches.map((match, index) => [keyFor(match, index), match]));
   renderInterests();
 }
 
@@ -214,7 +225,7 @@ function pickMatch(index: number, entity: Entity) {
   renderInterests();
   chipAt(index)?.focus();
   showToast(`Now using ${entity.name} (${typeText(entity.type)}).`);
-  if (!results.hidden && recommendations.length) void discover();
+  if (!results.hidden && recommendations.length) void discover(false, true);
 }
 
 async function openPicker(index: number, token: HTMLElement, chip: HTMLButtonElement) {
@@ -244,16 +255,24 @@ async function openPicker(index: number, token: HTMLElement, chip: HTMLButtonEle
     const response = await fetch("/api/resolve", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ interests: [{ name: interest.name }], alternatives: true }),
+      // The hint keeps the typed search on the input's own type; the server fills spare rows with other types.
+      body: JSON.stringify({ interests: [{ name: interest.name, ...(interest.type ? { type: interest.type } : {}) }], alternatives: true }),
     });
     const payload = await response.json() as { matches?: Match[]; error?: string };
     if (pickerPanel !== panel) return;
     if (!response.ok) throw new Error(payload.error ?? "lookup failed");
     const found = payload.matches?.[0];
-    const currentId = matchByName.get(interest.name.toLocaleLowerCase())?.entity?.id ?? interest.id;
-    const seen = new Set(currentId ? [currentId] : []);
+    const current = matchByName.get(interest.name.toLocaleLowerCase())?.entity;
+    const nameKey = (entity: Entity) => `${entity.name.toLocaleLowerCase()}|${entity.type}`;
+    // One row per id and per name+type; the input's current match is never offered again.
+    const seen = new Set<string>([...(current ? [current.id, nameKey(current)] : []), ...(interest.id ? [interest.id] : [])]);
     const options = [found?.entity, ...(found?.alternatives ?? [])]
-      .filter((entity): entity is Entity => Boolean(entity) && !seen.has(entity!.id) && (seen.add(entity!.id), true))
+      .filter((entity): entity is Entity => {
+        if (!entity || seen.has(entity.id) || seen.has(nameKey(entity))) return false;
+        seen.add(entity.id);
+        seen.add(nameKey(entity));
+        return true;
+      })
       .slice(0, 3);
     status.textContent = options.length ? "Switch this input to:" : "No other close matches in Qloo.";
     panel.append(...options.map((entity) => {
@@ -261,7 +280,7 @@ async function openPicker(index: number, token: HTMLElement, chip: HTMLButtonEle
       option.type = "button";
       option.append(document.createTextNode(entity.name));
       const kind = document.createElement("span");
-      kind.textContent = ` · ${typeText(entity.type)}`;
+      kind.textContent = ` · ${typeText(entity.type)}${entity.disambiguation ? ` · ${entity.disambiguation}` : ""}`;
       option.append(kind);
       option.addEventListener("click", () => pickMatch(index, entity));
       return option;
@@ -298,9 +317,18 @@ function setLoading(loading: boolean) {
   }
 }
 
-function currentInput() {
+/**
+ * With `reuseIds`, every input that already resolved goes back as `{ id, name, type }` so the server skips /search
+ * (refills, slider re-runs, picker switches). A fresh "Break the bubble" press resolves again, except picked ids.
+ */
+function currentInput(reuseIds = false) {
   return {
-    interests,
+    interests: reuseIds
+      ? interests.map((interest) => {
+          const entity = matchByName.get(interest.name.toLocaleLowerCase())?.entity;
+          return entity ? { id: entity.id, name: entity.name, type: entity.type } : interest;
+        })
+      : interests,
     targetType: target.value as TargetType,
     distance: Number(distance.value) as Distance,
     city: target.value === "place" ? cityInput.value.trim() : undefined,
@@ -383,13 +411,27 @@ function renderCard(item: Recommendation) {
   article.className = "recommendation-card";
   article.dataset.id = item.id;
 
-  const art = document.createElement("div");
-  art.className = "card-art";
-  art.role = "img";
-  art.setAttribute("aria-label", `Editorial artwork for ${item.title}`);
-  const col = item.artIndex % 5;
-  const row = Math.floor(item.artIndex / 5);
-  art.style.backgroundPosition = `${col * 25}% ${row * 100}%`;
+  // The sprite tile is picked by card position, so it says nothing about the result: decorative, hidden from AT.
+  const sprite = () => {
+    const tile = document.createElement("div");
+    tile.className = "card-art";
+    tile.setAttribute("aria-hidden", "true");
+    tile.style.backgroundPosition = `${(item.artIndex % 5) * 25}% ${Math.floor(item.artIndex / 5) * 100}%`;
+    return tile;
+  };
+  let art: HTMLElement = sprite();
+  if (item.imageUrl) {
+    // Qloo's own image of this entity: real content, so it gets real alt text. Falls back to the sprite if it fails.
+    const image = document.createElement("img");
+    image.className = "card-art card-photo";
+    image.src = item.imageUrl;
+    image.alt = `${item.title} (image from Qloo)`;
+    image.loading = "lazy";
+    image.decoding = "async";
+    image.referrerPolicy = "no-referrer";
+    image.addEventListener("error", () => image.replaceWith(sprite()), { once: true });
+    art = image;
+  }
 
   const content = document.createElement("div");
   content.className = "card-content";
@@ -415,6 +457,11 @@ function renderCard(item: Recommendation) {
     chip.textContent = `Because of ${reason}`;
     const score = item.becauseOfScores?.[index];
     chip.title = typeof score === "number" ? `Qloo explainability score ${score.toFixed(2)}` : "Qloo gave no score for this source";
+    if (reason === item.bridgedFrom) {
+      chip.classList.add("bridged");
+      chip.textContent = `Bridge from ${reason}`;
+      chip.title = `From the agent's extra query seeded with ${reason} alone${typeof score === "number" ? ` · Qloo score ${score.toFixed(2)}` : ""}`;
+    }
     reasons.append(chip);
   });
   if (!item.explainabilityPresent || item.becauseOf.length === 0) {
@@ -447,42 +494,97 @@ function renderCard(item: Recommendation) {
   return article;
 }
 
+/** Each resolved input's share of the visible cards (by "because of"), with a flag on the bridged input. */
+function renderBridgeBar() {
+  const bar = $("bridge-bar");
+  const list = $("bridge-list");
+  bar.hidden = resolvedNames.length < 2 || recommendations.length === 0;
+  if (bar.hidden) return;
+  const total = recommendations.length;
+  list.replaceChildren(...resolvedNames.map((name) => {
+    const cited = recommendations.filter((item) => item.becauseOf.includes(name)).length;
+    const row = document.createElement("li");
+    row.className = cited === 0 ? "uncited" : "";
+    const label = document.createElement("span");
+    label.className = "bridge-name";
+    label.textContent = name;
+    const meter = document.createElement("span");
+    meter.className = "bridge-meter";
+    meter.setAttribute("aria-hidden", "true");
+    const fill = document.createElement("i");
+    fill.style.width = `${Math.round((cited / total) * 100)}%`;
+    meter.append(fill);
+    const share = document.createElement("span");
+    share.className = "bridge-count";
+    share.textContent = ` · ${cited}/${total}`;
+    row.append(label, share, meter);
+    if (name === bridgedInput) {
+      const flag = document.createElement("span");
+      flag.className = "bridge-flag";
+      flag.textContent = " · needed an extra query";
+      flag.title = "Cited by no card in the first query, so the agent ran one more query seeded with it alone";
+      row.append(flag);
+    }
+    return row;
+  }));
+}
+
 function renderResults(response: DiscoveryResponse, isDemoRun = false) {
   recommendations = response.recommendations;
-  latestTrace = response.trace;
+  baseTrace = response.trace;
+  refillTraces = [];
+  resolvedNames = (response.resolved ?? []).map((entity) => entity.name);
+  bridgedInput = response.bridgedInput;
   grid.replaceChildren(...recommendations.map(renderCard));
+  renderBridgeBar();
   results.hidden = false;
   empty.hidden = true;
   $("trace-panel").hidden = false;
   $("result-summary").textContent = response.error ?? `${recommendations.length} new paths, connected to what you already love.`;
   setModeBadge(response.mode);
   demoPill.hidden = !isDemoRun;
-  renderTrace(response.trace, recommendations.length);
+  renderTrace(recommendations.length);
   if (response.error) $("trace-status").textContent = "Not run: no input matched";
   $<HTMLDetailsElement>("trace-panel").open = isDemoRun;
   if (response.error) showRequestError(response.error);
 }
 
-function renderTrace(trace: TraceStep[], countFound: number) {
-  const list = $("trace-list");
-  list.replaceChildren(...trace.map((step, index) => {
-    const row = document.createElement("li");
-    const number = document.createElement("span");
-    number.className = "trace-number";
-    number.textContent = String(index + 1).padStart(2, "0");
-    const copy = document.createElement("div");
-    const strong = document.createElement("strong");
-    strong.textContent = step.title;
-    const detail = document.createElement("p");
-    detail.textContent = step.detail;
-    copy.append(strong, detail);
-    row.append(number, copy);
-    return row;
-  }));
-  $("trace-status").textContent = `${countFound} new paths found`;
+function traceStep(step: TraceStep, number: string) {
+  const row = document.createElement("li");
+  const badge = document.createElement("span");
+  badge.className = "trace-number";
+  badge.textContent = number;
+  const copy = document.createElement("div");
+  const strong = document.createElement("strong");
+  strong.textContent = step.title;
+  const detail = document.createElement("p");
+  detail.textContent = step.detail;
+  copy.append(strong, detail);
+  row.append(badge, copy);
+  return row;
 }
 
-async function discover(isDemoRun = false) {
+/** The discovery run's full trace, then one sub-section per refill (appended, never replacing the run). */
+function renderTrace(countFound: number) {
+  const list = $("trace-list");
+  const rows = baseTrace.map((step, index) => traceStep(step, String(index + 1).padStart(2, "0")));
+  refillTraces.forEach((refill, refillIndex) => {
+    const section = document.createElement("li");
+    section.className = "trace-sub";
+    const heading = document.createElement("strong");
+    heading.textContent = refill.label;
+    const steps = document.createElement("ol");
+    steps.className = "trace-sublist";
+    steps.setAttribute("aria-label", refill.label);
+    steps.append(...refill.steps.map((step, index) => traceStep(step, `R${refillIndex + 1}.${index + 1}`)));
+    section.append(heading, steps);
+    rows.push(section);
+  });
+  list.replaceChildren(...rows);
+  $("trace-status").textContent = `${countFound} new paths found${refillTraces.length ? ` · ${refillTraces.length} refill${refillTraces.length === 1 ? "" : "s"}` : ""}`;
+}
+
+async function discover(isDemoRun = false, reuseIds = false) {
   if (interests.length < 3 || interests.length > 5) {
     showToast("Choose 3 to 5 things you love first.");
     interestInput.focus();
@@ -496,11 +598,12 @@ async function discover(isDemoRun = false) {
   results.hidden = false;
   empty.hidden = true;
   setLoading(true);
-  unresolvedNames.clear();
+  $("bridge-bar").hidden = true;
+  if (!reuseIds) unresolvedNames.clear();
   renderInterests();
   try {
     excludedIds = [];
-    const response = await api<DiscoveryResponse>("/api/discover", currentInput(), () => void discover(isDemoRun));
+    const response = await api<DiscoveryResponse>("/api/discover", currentInput(reuseIds), () => void discover(isDemoRun, reuseIds));
     applyMatches(response);
     renderResults(response, isDemoRun);
   } catch (error) {
@@ -521,7 +624,7 @@ async function exclude(item: Recommendation, article: HTMLElement, button: HTMLB
   article.classList.add("departing");
   try {
     const response = await api<DiscoveryResponse>("/api/exclude", {
-      ...currentInput(),
+      ...currentInput(true),
       knownId: item.id,
       currentIds: recommendations.map((entry) => entry.id),
     }, () => void exclude(item, article, button));
@@ -542,8 +645,13 @@ async function exclude(item: Recommendation, article: HTMLElement, button: HTMLB
     } else {
       grid.querySelector<HTMLButtonElement>(".known-button")?.focus();
     }
-    latestTrace = response.trace;
-    renderTrace(response.trace, recommendations.length);
+    const replacedWith = response.recommendations[0]?.title;
+    refillTraces.push({
+      label: `Refill ${refillTraces.length + 1}: “${item.title}” known → ${replacedWith ? `“${replacedWith}”` : "no replacement left"}`,
+      steps: response.trace,
+    });
+    renderTrace(recommendations.length);
+    renderBridgeBar();
     $("result-summary").textContent = `${recommendations.length} new paths · known discoveries stay out.`;
     showToast("Known path removed. A new one is in its place.");
   } catch (error) {
@@ -556,24 +664,36 @@ async function exclude(item: Recommendation, article: HTMLElement, button: HTMLB
   }
 }
 
+function loadExample(example: (typeof examples)[number]) {
+  interests = example.interests.map((item) => ({ ...item }));
+  unresolvedNames.clear();
+  matchByName.clear();
+  target.value = example.targetType;
+  cityInput.value = example.city ?? "";
+  updateTarget();
+  renderInterests();
+  void discover();
+}
+
+/** The three examples live in two places: the empty state (large) and a small row under the input (always shown). */
 function renderExamples() {
-  const list = $("example-list");
-  list.replaceChildren(...examples.map((example, index) => {
+  $("example-list").replaceChildren(...examples.map((example, index) => {
     const button = document.createElement("button");
     button.type = "button";
     button.innerHTML = `<span>0${index + 1}</span>`;
     button.append(document.createTextNode(example.label));
-    button.addEventListener("click", () => {
-      interests = example.interests.map((item) => ({ ...item }));
-      unresolvedNames.clear();
-      matchByName.clear();
-      target.value = example.targetType;
-      cityInput.value = example.city ?? "";
-      updateTarget();
-      renderInterests();
-      void discover();
-    });
+    button.addEventListener("click", () => loadExample(example));
     return button;
+  }));
+  $("example-row").replaceChildren(...examples.map((example) => {
+    const item = document.createElement("li");
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = example.short;
+    button.title = example.label;
+    button.addEventListener("click", () => loadExample(example));
+    item.append(button);
+    return item;
   }));
 }
 
@@ -595,7 +715,7 @@ distance.addEventListener("input", () => {
   // Results already on screen follow the slider (debounced so arrow-key steps send one request).
   window.clearTimeout(distanceRerunTimer);
   if (!results.hidden && recommendations.length && !discoverButton.disabled) {
-    distanceRerunTimer = window.setTimeout(() => void discover(), 450);
+    distanceRerunTimer = window.setTimeout(() => void discover(false, true), 450);
   }
 });
 discoverButton.addEventListener("click", () => void discover());
@@ -609,6 +729,8 @@ $("clear-button").addEventListener("click", () => {
   matchByName.clear();
   recommendations = [];
   excludedIds = [];
+  resolvedNames = [];
+  bridgedInput = undefined;
   renderInterests();
   showEmpty();
   interestInput.focus();

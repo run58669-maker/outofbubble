@@ -48,6 +48,52 @@ function numberValue(...values: unknown[]): number | undefined {
   return values.find((value): value is number => typeof value === "number" && Number.isFinite(value));
 }
 
+const NAMED_ENTITIES: Readonly<Record<string, string>> = { amp: "&", lt: "<", gt: ">", quot: "\"", apos: "'", nbsp: " " };
+
+/** Decodes HTML entities Qloo leaves in names, including double-escaped ones (`&amp;amp;` → `&`). */
+export function decodeEntities(value: string): string {
+  let current = value;
+  for (let pass = 0; pass < 4; pass += 1) {
+    const next = current.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (whole, body: string) => {
+      if (body[0] === "#") {
+        const code = body[1] === "x" || body[1] === "X" ? parseInt(body.slice(2), 16) : parseInt(body.slice(1), 10);
+        return Number.isFinite(code) && code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : whole;
+      }
+      return NAMED_ENTITIES[body.toLowerCase()] ?? whole;
+    });
+    if (next === current) break;
+    current = next;
+  }
+  return current;
+}
+
+/** First http(s) image URL among the shapes Qloo uses (`properties.image.url`, `image`, `images[0].url`). */
+export function imageUrlOf(row: JsonObject, properties: JsonObject): string | undefined {
+  const candidates: unknown[] = [properties.image, row.image, properties.images, row.images];
+  for (const candidate of candidates) {
+    const first = Array.isArray(candidate) ? candidate[0] : candidate;
+    const url = typeof first === "string" ? first : isObject(first) ? stringValue(first.url, first.src) : undefined;
+    if (url && /^https?:\/\//i.test(url)) return url.replace(/^http:/i, "https:");
+  }
+  return undefined;
+}
+
+/** Year and/or author from a search row, to tell same-named entities apart in the picker. */
+export function disambiguationOf(row: JsonObject, properties: JsonObject): string | undefined {
+  const explicit = stringValue(row.disambiguation, properties.disambiguation);
+  if (explicit) return decodeEntities(explicit);
+  const yearRaw = [properties.release_year, properties.publication_year, properties.year, row.release_year]
+    .find((value) => typeof value === "number" || (typeof value === "string" && /^\d{4}$/.test(value)));
+  const date = stringValue(properties.release_date, properties.publication_date);
+  const year = yearRaw !== undefined ? String(yearRaw) : date?.match(/^(\d{4})/)?.[1];
+  const authors = properties.author ?? properties.authors ?? row.author;
+  const author = Array.isArray(authors)
+    ? stringValue(...authors.map((item) => (isObject(item) ? item.name : item)))
+    : isObject(authors) ? stringValue(authors.name) : stringValue(authors);
+  const parts = [year, author && decodeEntities(author)].filter(Boolean);
+  return parts.length ? parts.join(" · ") : undefined;
+}
+
 function arrayAt(payload: unknown, paths: string[][]): unknown[] {
   for (const path of paths) {
     let current: unknown = payload;
@@ -128,11 +174,13 @@ export class HttpQlooClient implements QlooClient {
       const id = stringValue(row.entity_id, row.id, properties.entity_id, properties.id);
       const name = stringValue(row.name, properties.name, row.title, properties.title);
       if (!id || !name) return [];
+      const disambiguation = disambiguationOf(row, properties);
       return [{
         id,
-        name,
+        name: decodeEntities(name),
         type: entityType(row, properties),
         tags: extractTags(row.tags ?? properties.tags),
+        ...(disambiguation ? { disambiguation } : {}),
       }];
     });
   }
@@ -161,17 +209,20 @@ export class HttpQlooClient implements QlooClient {
         const score = numberValue(source.score, source.weight);
         if (key && score !== undefined) affinitySourceScores[key] = score;
       }
+      const imageUrl = imageUrlOf(row, properties);
       return [{
         id,
-        name,
+        name: decodeEntities(name),
         type: stringValue(row.type, properties.type) ?? query.targetType,
-        description: stringValue(row.description, properties.description, row.summary, properties.short_description) ?? "",
+        description: decodeEntities(stringValue(row.description, properties.description, row.summary, properties.short_description) ?? ""),
         affinitySourceIds: sources.map((source) => stringValue(source.entity_id, source.id)).filter((item): item is string => Boolean(item)),
         affinitySourceNames: sources.map((source) => stringValue(source.name, source.title)).filter((item): item is string => Boolean(item)),
         affinitySourceScores,
         score: typeof row.score === "number" ? row.score : undefined,
+        affinity: numberValue(realQuery.affinity, row.affinity, row.score),
         popularity: numberValue(row.popularity, properties.popularity, row.popularity_score, properties.popularity_score),
         trend: numberValue(row.trend, properties.trend, row.trend_score, properties.trend_score),
+        ...(imageUrl ? { imageUrl } : {}),
       }];
     });
   }

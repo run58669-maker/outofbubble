@@ -1,6 +1,6 @@
 import { distanceProfile, obscurityBadge } from "./distance.js";
 import { buildInsightsParams } from "./http-qloo-client.js";
-import { rankMatches } from "./name-match.js";
+import { normalizeName, rankMatches } from "./name-match.js";
 import { generateOneLiners } from "./one-liners.js";
 import {
   ENTITY_TYPES,
@@ -32,6 +32,8 @@ export const MIN_GOOD_RESULTS = 6;
 export const MIN_EXPLAINED_SHARE = 0.5;
 const POPULARITY_NOTCH = 0.15;
 const POPULARITY_CEILING = 0.96;
+/** Page size of the one extra taste-bridge query seeded with an uncited input alone. */
+export const BRIDGE_TAKE = 4;
 
 function toInterest(value: string | InterestInput): InterestInput | undefined {
   if (typeof value === "string") return { name: value.trim() };
@@ -140,6 +142,44 @@ function better(candidate: RunQuality, current: RunQuality, minResults: number):
   return false;
 }
 
+/** How many cards cite each resolved input (by explainability), in input order. */
+export function citationCounts(insights: QlooInsight[], resolved: ResolvedEntity[]): Array<{ entity: ResolvedEntity; count: number }> {
+  const cited = insights.map((insight) => new Set(buildExplanation(insight, resolved).becauseOf));
+  return resolved.map((entity) => ({ entity, count: cited.filter((names) => names.has(entity.name)).length }));
+}
+
+/** Lower affinity first; without an affinity, Qloo's own order decides (later = weaker). */
+function affinityOf(insight: QlooInsight): number | undefined {
+  return insight.affinity ?? insight.score;
+}
+
+/**
+ * Picks `dropCount` cards from the first batch to make room for bridge cards: lowest affinity first, and a card that
+ * is the only citation of some input is spared while any other candidate is left.
+ */
+export function pickCardsToDrop(insights: QlooInsight[], resolved: ResolvedEntity[], dropCount: number): Set<string> {
+  const order = insights
+    .map((insight, index) => ({ insight, index, affinity: affinityOf(insight) }))
+    .sort((a, b) => (a.affinity ?? -Infinity) - (b.affinity ?? -Infinity) || b.index - a.index);
+  const sources = new Map(insights.map((insight) => [insight.id, buildExplanation(insight, resolved).becauseOf]));
+  const counts = new Map<string, number>();
+  for (const names of sources.values()) for (const name of names) counts.set(name, (counts.get(name) ?? 0) + 1);
+  const dropped = new Set<string>();
+  const drop = (id: string) => {
+    dropped.add(id);
+    for (const name of sources.get(id) ?? []) counts.set(name, (counts.get(name) ?? 1) - 1);
+  };
+  for (const { insight } of order) {
+    if (dropped.size >= dropCount) break;
+    if ((sources.get(insight.id) ?? []).every((name) => (counts.get(name) ?? 0) > 1)) drop(insight.id);
+  }
+  for (const { insight } of order) {
+    if (dropped.size >= dropCount) break;
+    if (!dropped.has(insight.id)) drop(insight.id);
+  }
+  return dropped;
+}
+
 export class DiscoveryAgent {
   constructor(
     private readonly qloo: QlooClient,
@@ -159,7 +199,7 @@ export class DiscoveryAgent {
     const hint = interest.type;
     if (interest.id) {
       const entity: ResolvedEntity = { id: interest.id, name: interest.name, type: hint ?? "entity", tags: [] };
-      return { match: { interest: interest.name, entity }, detail: `${interest.name} → ${entity.type} · ${entity.id} (picked by user)` };
+      return { match: { interest: interest.name, entity }, detail: `${interest.name} → ${entity.type} · ${entity.id} (reused id, no search)` };
     }
     const allowed = (entity: ResolvedEntity) => (hint ? entity.type === hint : !PLACE_INPUT_TYPES.has(entity.type));
     let typedHits: ResolvedEntity[] = [];
@@ -185,10 +225,20 @@ export class DiscoveryAgent {
     const entity = ranked[0];
     const match: InterestMatch = { interest: interest.name, entity };
     if (withAlternatives) {
-      const seen = new Set(entity ? [entity.id] : []);
-      match.alternatives = rankMatches(interest.name, [...typedHits, ...untypedHits], ALTERNATIVE_MIN_SIMILARITY)
-        .filter((candidate) => !seen.has(candidate.id) && (seen.add(candidate.id), true))
-        .slice(0, MAX_ALTERNATIVES);
+      // Typed hits first; other entity types from the untyped search fill whatever room is left.
+      // One entry per id and per name+type (the current match counts), so no row repeats the chip's own match.
+      const key = (candidate: ResolvedEntity) => `${normalizeName(candidate.name)}|${candidate.type}`;
+      const seen = new Set(entity ? [entity.id, key(entity)] : []);
+      const fresh = (candidate: ResolvedEntity) => {
+        if (seen.has(candidate.id) || seen.has(key(candidate))) return false;
+        seen.add(candidate.id);
+        seen.add(key(candidate));
+        return true;
+      };
+      match.alternatives = [
+        ...rankMatches(interest.name, typedHits, ALTERNATIVE_MIN_SIMILARITY),
+        ...rankMatches(interest.name, untypedHits, ALTERNATIVE_MIN_SIMILARITY),
+      ].filter(fresh).slice(0, MAX_ALTERNATIVES);
     }
     const detail = (entity
       ? `${interest.name} → ${entity.type} · ${entity.id} (${route})`
@@ -199,7 +249,11 @@ export class DiscoveryAgent {
   async resolveMatches(interests: Array<string | InterestInput>, withAlternatives = false): Promise<{ matches: InterestMatch[]; detail: string }> {
     const unique = normalizeInterests(interests).slice(0, 5);
     const results = await Promise.all(unique.map((interest) => this.resolveOne(interest, withAlternatives)));
-    const header = `search.types=${PREFERRED_INPUT_TYPES.join(",")} (places only when hinted)`;
+    const reused = unique.filter((interest) => interest.id).length;
+    const plural = (count: number) => `${count} resolved id${count === 1 ? "" : "s"}`;
+    const header = reused === unique.length
+      ? `reused ${plural(reused)} (no /search call)`
+      : `search.types=${PREFERRED_INPUT_TYPES.join(",")} (places only when hinted)${reused ? `; reused ${plural(reused)}` : ""}`;
     return { matches: results.map((result) => result.match), detail: [header, ...results.map((result) => result.detail)].join("\n") };
   }
 
@@ -243,6 +297,7 @@ export class DiscoveryAgent {
     // Defensive slice: never show more cards than requested, even if the API ignores the page size.
     const run = async (query: InsightQuery) => (await this.qloo.insights(query)).slice(0, query.take);
     let insights = await run(firstQuery);
+    let usedQuery = firstQuery;
     let current = quality(insights, resolved);
     trace.push({ stage: "discover", title: "Discover", detail: `${formatInsightsQuery(firstQuery)}\nqloo.returned=${current.count}` });
 
@@ -265,6 +320,7 @@ export class DiscoveryAgent {
         const useRetry = better(retryQuality, current, minResults);
         decision = `Decision: ${relaxed.change} and retried because ${because}; kept the ${useRetry ? "retry" : "first query"} (${describe(useRetry ? retryQuality : current)})`;
         if (useRetry) {
+          usedQuery = relaxed.query;
           insights = retried;
           current = retryQuality;
         }
@@ -272,9 +328,24 @@ export class DiscoveryAgent {
     }
     trace.push({ stage: "decide", title: "Decide", detail: decision });
 
+    // Taste bridge: a full page (not a one-card refill) with 2+ inputs must cite every input at least once.
+    const bridge = firstQuery.take >= MIN_GOOD_RESULTS && resolved.length > 1 && insights.length
+      ? await this.tasteBridge(insights, resolved, usedQuery, run)
+      : undefined;
+    if (bridge) {
+      insights = bridge.insights;
+      trace.push({ stage: "bridge", title: "Taste bridge", detail: bridge.detail });
+    }
+
     const oneLiners = await this.oneLiners(insights);
     const recommendations: Recommendation[] = insights.map((insight, index) => {
       const explanation = buildExplanation(insight, resolved);
+      const bridgedFrom = bridge?.bridgedIds.has(insight.id) ? bridge.input : undefined;
+      // A bridge card came from a query seeded with that one input alone, so it is "because of" that input.
+      if (bridgedFrom && !explanation.becauseOf.includes(bridgedFrom)) {
+        explanation.becauseOf.unshift(bridgedFrom);
+        explanation.scores.unshift(null);
+      }
       return {
         id: insight.id,
         title: insight.name,
@@ -288,6 +359,8 @@ export class DiscoveryAgent {
         explainabilityPresent: explanation.becauseOf.length > 0,
         popularity: insight.popularity,
         badge: obscurityBadge(insight.popularity),
+        ...(bridgedFrom ? { bridgedFrom } : {}),
+        ...(insight.imageUrl ? { imageUrl: insight.imageUrl } : {}),
       };
     });
     trace.push({
@@ -296,7 +369,61 @@ export class DiscoveryAgent {
       detail: `result.count=${recommendations.length}\nexplainability.present=${recommendations.filter((item) => item.explainabilityPresent).length}/${recommendations.length}`,
     });
 
-    return { recommendations, resolved, unresolved, matches, trace, mode: this.qloo.mode };
+    return {
+      recommendations, resolved, unresolved, matches, trace, mode: this.qloo.mode,
+      ...(bridge?.ran ? { bridgedInput: bridge.input } : {}),
+    };
+  }
+
+  /**
+   * The agent's taste decision: count how many cards cite each input. If one input is cited by none, run ONE extra
+   * /v2/insights call seeded with that input alone (same type and distance parameters, take=4), merge the new cards and
+   * drop the weakest first-batch cards so the page stays at its size.
+   */
+  private async tasteBridge(
+    insights: QlooInsight[],
+    resolved: ResolvedEntity[],
+    baseQuery: InsightQuery,
+    run: (query: InsightQuery) => Promise<QlooInsight[]>,
+  ): Promise<{ insights: QlooInsight[]; detail: string; ran: boolean; input?: string; bridgedIds: Set<string> }> {
+    const counts = citationCounts(insights, resolved);
+    const total = insights.length;
+    const uncited = counts.filter((entry) => entry.count === 0);
+    const target = uncited[0]?.entity;
+    if (!target) {
+      const shares = counts.map((entry) => `${entry.entity.name} ${entry.count}`).join(" · ");
+      return { insights, ran: false, bridgedIds: new Set(), detail: `Decision: every input is represented (${shares}); kept first query` };
+    }
+    const also = uncited.length > 1 ? ` (also uncited: ${uncited.slice(1).map((entry) => entry.entity.name).join(", ")}; one extra query only)` : "";
+    const bridgeQuery: InsightQuery = {
+      ...baseQuery,
+      signalEntityIds: [target.id],
+      excludeEntityIds: [...new Set([...baseQuery.excludeEntityIds, ...insights.map((insight) => insight.id)])],
+      take: BRIDGE_TAKE,
+    };
+    const head = `Decision: ${target.name} was cited by 0 of ${total} cards → ran one extra query seeded with it alone`;
+    let extra: QlooInsight[];
+    try {
+      extra = await run(bridgeQuery);
+    } catch (error) {
+      // The bridge is an improvement, never a reason to fail the whole page.
+      const reason = error instanceof Error ? error.message.slice(0, 120) : "error";
+      return { insights, ran: false, bridgedIds: new Set(), detail: `${head}; it failed (${reason}), kept first query${also}` };
+    }
+    const seen = new Set(insights.map((insight) => insight.id));
+    const fresh = extra.filter((insight) => !seen.has(insight.id) && (seen.add(insight.id), true));
+    const room = Math.max(baseQuery.take - fresh.length, 0);
+    const dropCount = Math.max(insights.length - room, 0);
+    const dropped = pickCardsToDrop(insights, resolved, dropCount);
+    const merged = [...insights.filter((insight) => !dropped.has(insight.id)), ...fresh];
+    const droppedNote = dropped.size ? `; dropped ${dropped.size} lowest-affinity card${dropped.size === 1 ? "" : "s"} from the first query` : "";
+    return {
+      insights: merged,
+      ran: true,
+      input: target.name,
+      bridgedIds: new Set(fresh.map((insight) => insight.id)),
+      detail: `${head}; merged ${fresh.length} card${fresh.length === 1 ? "" : "s"}${droppedNote}${also}\n${formatInsightsQuery(bridgeQuery)}\nqloo.returned=${extra.length}`,
+    };
   }
 
   async refill(rawInput: DiscoverInput, currentIds: string[], knownId: string): Promise<DiscoveryResult> {

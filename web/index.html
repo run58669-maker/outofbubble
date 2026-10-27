@@ -32,6 +32,10 @@
             <input id="interest-input" type="text" autocomplete="off" placeholder="Add a film, book, game, place…" aria-label="Add an interest" />
           </div>
           <p class="input-hint" id="input-hint">Press Enter to add · Mix any categories</p>
+          <div class="example-strip">
+            <span id="example-row-label">Try an example</span>
+            <ul class="example-row" id="example-row" aria-labelledby="example-row-label"></ul>
+          </div>
         </div>
 
         <div class="composer-controls">
@@ -90,6 +94,10 @@
           </div>
           <div class="mode-note" id="mode-note">Checking data mode…</div>
         </div>
+        <section class="bridge-bar" id="bridge-bar" aria-labelledby="bridge-title" hidden>
+          <h3 id="bridge-title">Taste bridge <span>· how many cards each input pulled</span></h3>
+          <ul class="bridge-list" id="bridge-list"></ul>
+        </section>
         <div class="card-grid" id="card-grid" aria-live="polite" aria-busy="true"></div>
       </section>
 

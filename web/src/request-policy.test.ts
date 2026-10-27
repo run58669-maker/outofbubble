@@ -14,7 +14,9 @@ describe("slow request UI policy", () => {
     });
   });
 
-  it("offers a retry when the client timeout is reached", () => {
-    expect(requestUiState(REQUEST_TIMEOUT_MS)).toMatchObject({ phase: "timed-out", canRetry: true });
+  it("waits the full minute promised by the wake notice, then offers a retry at 65 s", () => {
+    expect(REQUEST_TIMEOUT_MS).toBe(65_000);
+    expect(requestUiState(REQUEST_TIMEOUT_MS - 1).phase).toBe("waking");
+    expect(requestUiState(REQUEST_TIMEOUT_MS)).toMatchObject({ phase: "timed-out", canRetry: true, message: expect.stringContaining("65 seconds") });
   });
 });

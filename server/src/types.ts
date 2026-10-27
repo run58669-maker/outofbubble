@@ -21,6 +21,8 @@ export interface ResolvedEntity {
   name: string;
   type: string;
   tags: string[];
+  /** Short disambiguator from the Qloo search row (year, author…), when Qloo gave one. */
+  disambiguation?: string;
 }
 
 /** One user input. `type` is an explicit hint; `id` pins an entity the user picked from the alternatives. */
@@ -60,8 +62,12 @@ export interface QlooInsight {
   /** Explainability strength per source, keyed by source entity id (or by name when Qloo gave no id). */
   affinitySourceScores?: Record<string, number>;
   score?: number;
+  /** Qloo affinity for this result (`query.affinity`), falling back to `score`. */
+  affinity?: number;
   popularity?: number;
   trend?: number;
+  /** Entity image from the Qloo payload (`properties.image.url`), when present. */
+  imageUrl?: string;
 }
 
 export interface QlooClient {
@@ -72,7 +78,7 @@ export interface QlooClient {
 }
 
 export interface TraceStep {
-  stage: "resolve" | "discover" | "decide" | "explain" | "refill";
+  stage: "resolve" | "discover" | "decide" | "bridge" | "explain" | "refill";
   title: string;
   detail: string;
 }
@@ -93,6 +99,10 @@ export interface Recommendation {
   popularity?: number;
   /** Popularity badge (see BADGE_THRESHOLDS in distance.ts). */
   badge: "well known" | "familiar" | "deep cut" | "reach unknown";
+  /** Set on cards from the taste-bridge query: the input that query was seeded with alone. */
+  bridgedFrom?: string;
+  /** Qloo entity image, when the payload had one. */
+  imageUrl?: string;
 }
 
 export interface DiscoverInput {
@@ -112,5 +122,7 @@ export interface DiscoveryResult {
   matches: InterestMatch[];
   trace: TraceStep[];
   mode: "mock" | "http";
+  /** The input the taste bridge ran an extra query for (cited by 0 cards in the first query). */
+  bridgedInput?: string;
   error?: string;
 }
