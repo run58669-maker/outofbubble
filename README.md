@@ -140,11 +140,11 @@ All four were captured from the live deployment (real Qloo data, "Live Qloo" bad
 
 ![Results with the taste-bridge bar](docs/screenshots/02_results.png)
 
-*Live results at Out of the bubble. The taste-bridge bar shows each input's share of the 10 cards (Blade Runner 6, Left Hand of Darkness 4, Disco Elysium 6); The Left Hand of Darkness is flagged "needed an extra query" because no first-query card cited it, and its 4 cards carry "Bridge from The Left Hand of Darkness" chips. Every card has a Qloo image.*
+*Live results at Out of the bubble. The taste-bridge bar shows each input's share of the 10 cards (Blade Runner 6, Left Hand of Darkness 4, Disco Elysium 6); The Left Hand of Darkness is flagged "needed an extra query" because no first-query card cited it, and its 4 cards carry "Bridge from The Left Hand of Darkness" chips. Every card has a Qloo image. The four bridge cards sit at the bottom of the list (see the next screenshot), below this frame.*
 
 ![How the agent thought](docs/screenshots/03_trace.png)
 
-*The trace panel expanded: Resolve, Discover, Decide (kept first query), Taste bridge (0 of 10 cards cited the book, one extra query with its exact parameters, 4 merged, 4 dropped) and Explain.*
+*The trace panel expanded: Resolve, Discover, Decide (kept first query), Taste bridge (0 of 10 cards cited the book, one extra query with its exact parameters including `filter.exclude.entities=<10 ids>`, 4 merged, 4 dropped) and Explain.*
 
 ![Mobile results](docs/screenshots/04_mobile.png)
 
