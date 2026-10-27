@@ -15,6 +15,8 @@ export const API_RATE_LIMIT: RateLimitOptions = { max: 20, windowMs: 60_000 };
 /** Across ALL clients: Qloo-hitting requests per minute (cache hits do not count). Guards the quota against a spread-out scrape. */
 export const GLOBAL_QLOO_LIMIT: RateLimitOptions = { max: 120, windowMs: 60_000 };
 export const BUSY_MESSAGE = "The app is busy right now, try again in a minute";
+/** Set once when this module loads, so /api/health shows when the running build started. */
+const BUILT_AT = new Date().toISOString();
 
 function bodyOf(request: Request): Record<string, unknown> {
   return typeof request.body === "object" && request.body !== null ? request.body as Record<string, unknown> : {};
@@ -90,7 +92,7 @@ export function createApp(
     response.setHeader("Cache-Control", "no-store");
     next();
   });
-  app.get("/api/health", (_request, response) => response.json({ ok: true, mode: agent.mode }));
+  app.get("/api/health", (_request, response) => response.json({ ok: true, mode: agent.mode, commit: process.env.RENDER_GIT_COMMIT?.slice(0, 7) ?? null, builtAt: BUILT_AT }));
   // Health polling during a cold start is exempt; every other /api request counts toward the per-client limit,
   // including ones that end in 400/413 (the limiter runs before body parsing and validation).
   app.use("/api", rateLimit(options.rateLimit ?? API_RATE_LIMIT));
