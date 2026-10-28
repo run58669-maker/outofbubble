@@ -7,6 +7,7 @@ import {
   type RequestUiState,
 } from "./request-policy.js";
 import { NO_EXCLUSIONS, addExclusion, carryExclusions, type ExclusionState } from "./exclusions.js";
+import { openInLinks } from "./open-in.js";
 
 type TargetType = "artist" | "book" | "podcast" | "movie" | "tv_show" | "video_game" | "place";
 type Distance = 0 | 1 | 2;
@@ -525,13 +526,26 @@ function renderCard(item: Recommendation) {
   known.addEventListener("click", () => exclude(item, article, known));
   const actions = document.createElement("div");
   actions.className = "card-actions";
-  const search = document.createElement("a");
-  search.className = "search-link";
-  search.href = `https://duckduckgo.com/?q=${encodeURIComponent(`${item.title} ${typeLabel(item.type).toLowerCase()}`)}`;
-  search.target = "_blank";
-  search.rel = "noopener noreferrer";
-  search.textContent = "Search the web";
-  actions.append(search, known);
+  const openIn = document.createElement("span");
+  openIn.className = "open-in";
+  openIn.append("Open in");
+  // Visible text is the service name; the hidden part gives screen readers the title and the new-tab hint.
+  const hidden = (text: string) => {
+    const span = document.createElement("span");
+    span.className = "sr-only";
+    span.textContent = text;
+    return span;
+  };
+  for (const link of openInLinks(item.type, item.title, item.type === "place" ? cityInput.value : undefined)) {
+    const anchor = document.createElement("a");
+    anchor.className = "search-link";
+    anchor.href = link.url;
+    anchor.target = "_blank";
+    anchor.rel = "noopener noreferrer";
+    anchor.append(hidden("Search "), link.label, hidden(` for “${item.title}” (opens in a new tab)`));
+    openIn.append(anchor);
+  }
+  actions.append(openIn, known);
   if (copyText) {
     const copy = document.createElement("p");
     copy.textContent = copyText;

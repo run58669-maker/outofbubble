@@ -36,6 +36,8 @@ The agent returns 10 ranked cards. Each card shows the recommendation, its categ
 
 If you already know one, press **"I already know this."** The agent excludes it, along with everything currently on screen, and refills that slot with a new result. Known items stay excluded across re-runs (slider moves, match switches, refills); only Start over or a different set of inputs clears them. The **"How the agent thought"** panel shows each step: Resolve, Discover, Decide, Taste bridge, Explain, and each Refill appended below the run.
 
+Every card also has typed **"Open in"** links for its category (Spotify and Bandcamp for artists, Goodreads and Bookshop.org for books, Apple Podcasts and Spotify for podcasts, Letterboxd and JustWatch for films and TV, Steam and IGDB for games, Google Maps with the city for places), plus a plain web search as the last option, so a discovery is one click from listening, reading, watching or going.
+
 **Measured 2026-10-27 on commit 962dc52** (live site, one `/api/discover` call per cell, real Qloo key). Default example: *Blade Runner 2049*, *The Left Hand of Darkness*, *Disco Elysium* → artists, at all three stops; examples 02 (Nausicaa, Braiding Sweetgrass, Patagonia → places in Kyoto) and 03 (Hades, Hadestown, Circe → podcasts) at Out of the bubble. Cited = cards on which Qloo's explainability names the input; seeded cards are not counted as cited.
 
 | Cell | Results | Cited (per input, in order) | Taste bridge | Explained | Mean popularity (range) |
@@ -100,7 +102,9 @@ In the live runs above, mean popularity on the default example drops from 0.952 
 
 ## What's next
 
-- Show explainability strength per source as a small bar on each "because of" chip, not only in the tooltip.
+- **Saved bubbles**: keep a run (inputs, distance, the cards you kept, the ones you marked as known) so you can come back to it, and so known items stay excluded across sessions, not just within one.
+- **Share link**: a URL that encodes the inputs and distance, so a friend opens the same starting point and gets their own Qloo results from it.
+- **Weekly "step out" digest**: once a week, re-run your saved bubbles one stop further out than last time and send the few cards you have not seen yet.
 
 ## Built with
 `typescript` `node.js` `express` `qloo` `qloo-insights-api` `esbuild` `vitest` `html5` `css3` `docker` `render` `openai` (optional hook)

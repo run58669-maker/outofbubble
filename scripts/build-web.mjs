@@ -8,9 +8,11 @@ const fromRoot = (...parts) => resolve(root, ...parts);
 const appSource = await readFile(fromRoot("web/src/app.ts"), "utf8");
 const requestPolicySource = await readFile(fromRoot("web/src/request-policy.ts"), "utf8");
 const exclusionsSource = await readFile(fromRoot("web/src/exclusions.ts"), "utf8");
+const openInSource = await readFile(fromRoot("web/src/open-in.ts"), "utf8");
 const browserSource = [
   requestPolicySource.replace(/^export /gm, ""),
   exclusionsSource.replace(/^export /gm, ""),
+  openInSource.replace(/^export /gm, ""),
   // Local modules are inlined above, so every `import { … } from "./x.js";` is stripped from the app source.
   appSource.replace(/^import \{[\s\S]*?\} from "\.\/[\w-]+\.js";\r?\n/gm, ""),
 ].join("\n");
